@@ -1,7 +1,7 @@
 #pragma once
 #include <functional>
 #include <kosio/sync.hpp>
-#include "status.hpp"
+#include "vrpc/core/status.hpp"
 
 namespace vrpc {
 class RpcResult {
@@ -26,7 +26,7 @@ private:
     uint32_t   payload_size_;
 };
 using RpcInvoke = std::function<kosio::async::Task<RpcResult>(std::string_view, std::span<char>)>;
-using RpcCallback = std::function<kosio::async::Task<void>(std::string_view)>;
+using RpcCallback = std::function<kosio::async::Task<void>(StatusCode, std::string_view)>;
 
 [[nodiscard]]
 static auto make_result(StatusCode code, uint32_t payload_size = 0) -> RpcResult {

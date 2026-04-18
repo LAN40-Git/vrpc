@@ -1,15 +1,39 @@
 #pragma once
 #include "vrpc/common/error.hpp"
-#include "vrpc/core/detail/connection.hpp"
+#include "vrpc/core/detail/config.hpp"
+#include "vrpc/core/detail/request.hpp"
+#include <kosio/net.hpp>
 
 namespace vrpc::server {
 class RpcServer;
 } // namespace vrpc::server
 
 namespace vrpc::server::detail {
-struct ConnectionManager {
+class Connection {
+public:
+    explicit Connection(
+        const kosio::net::SocketAddr& addr,
+        kosio::net::TcpStream stream,
+        vrpc::detail::RpcRequestSender sender,
+        vrpc::detail::RpcRequestReceiver receiver)
+        : addr_(addr)
+        , stream_(std::move(stream))
+        , sender_(std::move(sender))
+        , receiver_(std::move(receiver))
+        , req_buf_(vrpc::detail::MAX_RPC_MESSAGE_SIZE)
+        , resp_buf_(vrpc::detail::MAX_RPC_MESSAGE_SIZE) {}
+
+public:
+    kosio::net::SocketAddr           addr_;
+    kosio::net::TcpStream            stream_;
+    vrpc::detail::RpcRequestSender   sender_;
+    vrpc::detail::RpcRequestReceiver receiver_;
+    std::vector<char>                req_buf_;
+    std::vector<char>                resp_buf_;
+};
+
+class ConnectionManager {
     friend class vrpc::server::RpcServer;
-    using Connection = vrpc::detail::Connection;
 public:
     [[REMEMBER_CO_AWAIT]]
     auto assign(const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<Result<std::shared_ptr<Connection>>> {
@@ -32,6 +56,22 @@ public:
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
         connections_.erase(addr);
+    }
+
+    [[REMEMBER_CO_AWAIT]]
+    auto empty() -> kosio::async::Task<bool> {
+        co_await mutex_.lock();
+        std::lock_guard lock{mutex_, std::adopt_lock};
+        co_return connections_.empty();
+    }
+
+    [[REMEMBER_CO_AWAIT]]
+    auto cancel_all() -> kosio::async::Task<void> {
+        co_await mutex_.lock();
+        std::lock_guard lock{mutex_, std::adopt_lock};
+        for (auto& connection : connections_ | std::views::values) {
+            co_await kosio::io::cancel(connection->stream_.fd(), IORING_ASYNC_CANCEL_ALL);
+        }
     }
 
 private:

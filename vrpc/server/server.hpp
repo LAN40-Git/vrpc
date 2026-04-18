@@ -95,16 +95,15 @@ public:
         co_await kosio::net::TcpStream::connect(addr);
         co_await latch_.wait();
 
-        auto& connections = manager_.connections_;
-        for (auto& connection : connections | std::views::values) {
-            connection->sender_.close();
-            co_await connection->latch_.wait();
+        while (!co_await manager_.empty()) {
+            co_await manager_.cancel_all();
+            co_await kosio::time::sleep(vrpc::detail::WAITING_INTERVAL_MS);
         }
         LOG_INFO("vrpc server on {} stop", addr);
     }
 
 private:
-    static auto handle_request_loop(std::shared_ptr<vrpc::detail::Connection> conn) -> kosio::async::Task<void> {
+    static auto handle_request_loop(std::shared_ptr<detail::Connection> conn) -> kosio::async::Task<void> {
         auto& stream = conn->stream_;
         auto& sender = conn->sender_;
         auto& buf = conn->req_buf_;
@@ -142,11 +141,11 @@ private:
             }
         }
 
+        LOG_INFO("connection from {} closed", conn->addr_);
         sender.close();
-        co_await conn->latch_.arrive_and_wait();
     }
 
-    auto send_response_loop(std::shared_ptr<vrpc::detail::Connection> conn) -> kosio::async::Task<void> {
+    auto send_response_loop(std::shared_ptr<detail::Connection> conn) -> kosio::async::Task<void> {
         auto& stream = conn->stream_;
         auto& receiver = conn->receiver_;
         auto& buf = conn->resp_buf_;
@@ -156,7 +155,6 @@ private:
         while (true) {
             auto has_request = co_await receiver.recv();
             if (!has_request) {
-                // 只有在通道关闭时才会退出
                 break;
             }
             auto request = std::move(has_request.value());
@@ -183,8 +181,6 @@ private:
                 LOG_ERROR("failed to send response to {}: {}", conn->addr_, ret.error());
             }
         }
-        receiver.close();
-        co_await conn->latch_.arrive_and_wait();
         co_await manager_.remove(conn->addr_.to_string());
     }
 
