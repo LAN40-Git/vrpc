@@ -15,6 +15,7 @@ class Client {
         kConnecting,
         kConnected,
         kDisconnected,
+        kShuttingDown,
         kShutdown
     };
 
@@ -45,9 +46,7 @@ public:
         I invoke_type,
         const P& request,
         const Callback& callback) -> kosio::async::Task<StatusCode> {
-        static std::atomic<uint64_t> current_request_id{0};
-
-        auto request_id = current_request_id.fetch_add(1);
+        auto request_id = current_request_id_.fetch_add(1);
         auto req_payload = request.SerializeAsString();
         if (req_payload.size() > detail::MAX_MESSAGE_SIZE) {
             co_return StatusCode::kResourceExhausted;
@@ -62,7 +61,8 @@ public:
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
         // 通道关闭，RPC 服务不可用
-        if (status_ == Status::kShutdown) {
+        if (status_ == Status::kShuttingDown ||
+            status_ == Status::kShutdown) {
             co_return StatusCode::kUnavailable;
         }
         // 连接未建立
@@ -81,16 +81,29 @@ public:
 
     [[REMEMBER_CO_AWAIT]]
     auto shutdown() -> kosio::async::Task<void> {
-        co_await mutex_.lock();
-        std::lock_guard lock{mutex_, std::adopt_lock};
-        status_ = Status::kShutdown;
-        sender_->close();
+        {
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            status_ = Status::kShuttingDown;
+            sender_->close();
+        }
+
+        while (true) {
+            co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
+            co_await kosio::time::sleep(detail::WAITING_INTERVAL_MS);
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            if (status_ == Status::kShutdown) {
+                break;
+            }
+        }
         co_await latch_.wait();
     }
 
 private:
     static auto do_avoid(int retry_times) noexcept -> std::size_t {
-        return std::min(detail::MAX_CONNECT_BLOCK_OFF, retry_times * detail::CONNECT_MULTIPLIER * detail::INITIAL_CONNECT_BLOCK_OFF);
+        return std::min(detail::MAX_CONNECT_BLOCK_OFF,
+            retry_times * detail::CONNECT_MULTIPLIER * detail::INITIAL_CONNECT_BLOCK_OFF);
     }
 
     auto connect() -> kosio::async::Task<void> {
@@ -177,6 +190,13 @@ private:
             co_await trigger_callback(request_id, code, {buf.data(), payload_size});
         }
         LOG_INFO("connection on {}:{} closed", server_ip_, server_port_);
+        co_await mutex_.lock();
+        std::lock_guard lock{mutex_, std::adopt_lock};
+        if (status_ != Status::kShuttingDown) {
+            status_ = Status::kDisconnected;
+        } else {
+            status_ = Status::kShutdown;
+        }
     }
 
     auto send_request_loop() -> kosio::async::Task<void> {
@@ -187,8 +207,9 @@ private:
                 break;
             }
             auto request = std::move(has_request.value());
+            auto request_id = request.request_id;
             auto& req_payload = request.req_payload;
-            req_header.request_id = htobe64(request.request_id);
+            req_header.request_id = htobe64(request_id);
             req_header.payload_size = htobe32(req_payload.size());
             req_header.service_type = request.service_type;
             req_header.invoke_type = request.invoke_type;
@@ -201,21 +222,25 @@ private:
             );
 
             if (!ret) {
-                callbacks_.erase(request.request_id);
+                co_await trigger_callback(request_id, StatusCode::kInternal, "");
             }
         }
         latch_.count_down();
     }
 
 private:
-    std::string                              server_ip_;
-    uint16_t                                 server_port_;
-    kosio::net::TcpStream                    stream_;
-    kosio::sync::Mutex                       mutex_;
-    kosio::sync::Latch                       latch_{1};
-    Status                                   status_{Status::kDisconnected};
-    std::shared_ptr<detail::RequestSender>   sender_{nullptr};
-    std::shared_ptr<detail::RequestReceiver> receiver_{nullptr};
-    CallbackMap                              callbacks_;
+    using RequestSenderPtr = std::shared_ptr<detail::RequestSender>;
+    using RequestReceiverPtr = std::shared_ptr<detail::RequestReceiver>;
+
+    std::string           server_ip_;
+    uint16_t              server_port_;
+    kosio::net::TcpStream stream_;
+    kosio::sync::Mutex    mutex_;
+    kosio::sync::Latch    latch_{1};
+    std::atomic<uint64_t> current_request_id_{0};
+    Status                status_{Status::kDisconnected};
+    RequestSenderPtr      sender_{nullptr};
+    RequestReceiverPtr    receiver_{nullptr};
+    CallbackMap           callbacks_;
 };
 } // namespace vrpc

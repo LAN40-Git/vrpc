@@ -48,12 +48,20 @@ auto send_math_sub_request(vrpc::Client& client, int64_t minuend, int64_t subtra
     co_await client.call(ServiceType::kMath, InvokeType::kMathSub, request, handle_math_sub_response);
 }
 
+auto shutdown_handler(vrpc::Client& client, uint64_t timeout = 0) -> kosio::async::Task<void> {
+    if (timeout == 0) {
+        co_await kosio::signal::ctrl_c();
+    } else {
+        co_await kosio::time::sleep(timeout);
+    }
+    co_await client.shutdown();
+}
+
 auto main_loop() -> kosio::async::Task<void> {
     auto client = vrpc::Client("localhost", 8080);
-    co_await send_math_add_request(client, 10, 20);
-    co_await send_math_sub_request(client, 10, 20);
-    co_await kosio::time::sleep(5000);
-    co_await client.shutdown();
+    co_await send_math_add_request(client, 199, 311);
+    co_await send_math_sub_request(client, 36, 21);
+    co_await shutdown_handler(client);
 }
 
 auto main() -> int {

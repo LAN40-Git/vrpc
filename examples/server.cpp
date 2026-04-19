@@ -15,8 +15,6 @@ auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_
     auto addend = request.addend();
     auto result = augend + addend;
 
-    LOG_INFO("receive math add request: {} - {} = ?", augend, addend);
-
     MathAddResponse response;
     response.set_result(result);
     co_return vrpc::make_result(response, resp_payload);
@@ -32,14 +30,12 @@ auto handle_math_sub_request(std::string_view req_payload, std::span<char> resp_
     auto subtrahend = request.subtrahend();
     auto result = minuend - subtrahend;
 
-    LOG_INFO("receive math sub request: {} - {} = ?", minuend, subtrahend);
-
     MathSubResponse response;
     response.set_result(result);
     co_return vrpc::make_result(response, resp_payload);
 }
 
-auto shutdown_timer(uint64_t timeout = 0) -> kosio::async::Task<void> {
+auto shutdown_handler(uint64_t timeout = 0) -> kosio::async::Task<void> {
     if (timeout == 0) {
         co_await kosio::signal::ctrl_c();
     } else {
@@ -51,7 +47,7 @@ auto shutdown_timer(uint64_t timeout = 0) -> kosio::async::Task<void> {
 auto main_loop() -> kosio::async::Task<void> {
     server.register_invoke(ServiceType::kMath, InvokeType::kMathAdd, handle_math_add_request);
     server.register_invoke(ServiceType::kMath, InvokeType::kMathSub, handle_math_sub_request);
-    kosio::spawn(shutdown_timer());
+    kosio::spawn(shutdown_handler());
     co_await server.wait();
 }
 
