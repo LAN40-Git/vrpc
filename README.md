@@ -34,7 +34,7 @@ sudo make install
 
 ### Uninstallation
 ```shell
-sudo rm -rf usr/local/include/vrpc
+sudo rm -rf /usr/local/include/vrpc
 ```
 
 ## TODO-Lists
