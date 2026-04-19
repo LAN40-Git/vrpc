@@ -32,9 +32,20 @@ make -j$(nproc)
 sudo make install
 ```
 
+## TODO-Lists
 
+- [x] 服务端与客户端基本通信
+- [x] 优雅关闭机制
+- [ ] RPC 请求超时
+- [ ] 自定义客户端退避策略
+- [x] 消息大小限制
+- [ ] 请求速率限制
+- [ ] 实现 IDL，自动定义枚举和方法
+- [x] 利用固长消息头解决 TCP 粘包
+- [ ] 手动二进制编码（目前依赖于 `protobuf`）
+- [ ] 性能测试
 
-### Example
+## Example
 1.`protobuf` 文件
 
 `math.proto`
@@ -228,17 +239,3 @@ auto main() -> int {
 客户端得到结果
 
 ![image-20260419205713699](/home/lan/CLionProjects/vrpc/.typora/image-20260419205713699.png)
-
-
-## TODO-Lists
-
-- [x] 服务端与客户端基本通信
-- [x] 优雅关闭机制
-- [ ] RPC 请求超时
-- [ ] 自定义客户端退避策略
-- [x] 消息大小限制
-- [ ] 请求速率限制
-- [ ] 实现 IDL，自动定义枚举和方法
-- [x] 利用固长消息头解决 TCP 粘包
-- [ ] 手动二进制编码（目前依赖于 `protobuf`）
-- [ ] 性能测试
