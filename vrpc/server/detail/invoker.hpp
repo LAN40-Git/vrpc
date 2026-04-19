@@ -7,10 +7,10 @@
 #include "vrpc/core/detail/request.hpp"
 #include "vrpc/server/detail/invoker.hpp"
 
-namespace vrpc::server::detail {
-class RpcInvoker {
+namespace vrpc::detail {
+class Invoker {
 public:
-    void register_invoke(Type service_type, Type invoke_type, const RpcInvoke& invoke) {
+    void register_invoke(Type service_type, Type invoke_type, const Invoke& invoke) {
         invokes_[service_type][invoke_type] = invoke;
     }
 
@@ -19,7 +19,7 @@ public:
         Type service_type,
         Type invoke_type,
         std::string_view req_payload,
-        std::span<char> resp_payload) -> kosio::async::Task<RpcResult> {
+        std::span<char> resp_payload) -> kosio::async::Task<InvokeResult> {
         auto it_service = invokes_.find(service_type);
         if (it_service == invokes_.end()) {
             co_return make_result(StatusCode::kNotFound);
@@ -33,7 +33,7 @@ public:
     }
 
 private:
-    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, RpcInvoke>>;
+    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, Invoke>>;
     InvokeMap invokes_;
 };
-} // namespace vrpc::server::detail
+} // namespace vrpc::detail

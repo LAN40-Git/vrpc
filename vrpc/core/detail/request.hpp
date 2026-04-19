@@ -5,15 +5,13 @@
 #include "vrpc/core/type.hpp"
 
 namespace vrpc::detail {
-struct RpcRequest {
+struct Request {
     uint64_t    request_id{};
     Type        service_type{};
     Type        invoke_type{};
     std::string req_payload{};
-    RpcCallback callback{};
+    Callback    callback{};
 };
 
-using RpcRequestChannel = kosio::sync::Channel<RpcRequest>;
-using RpcRequestSender = RpcRequestChannel::Sender;
-using RpcRequestReceiver = RpcRequestChannel::Receiver;
+using RequestChannel = kosio::sync::Channel<Request>;
 } // namespace vrpc::detail

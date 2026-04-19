@@ -11,6 +11,8 @@ enum class StatusCode : unsigned char {
     kUnavailable,
     kInternal,
     kResourceExhausted,
+    kAlreadyExists,
+    kAborted,
     kUnknown
 };
 } // namespace vrpc

@@ -15,11 +15,13 @@ message(STATUS "Build type: " "${CMAKE_BUILD_TYPE}")
 # ====== LIBRARY ======
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBURING REQUIRED liburing)
+find_package(TBB REQUIRED)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 set(DEPEND_LIBS
         ${LIBURING_LIBRARIES}
+        tbb
 )
 
 # ====== EXAMPLES ======
