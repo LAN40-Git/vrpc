@@ -1,5 +1,6 @@
 #pragma once
 #include <type_traits>
+#include <google/protobuf/message.h>
 #include "vrpc/core/type.hpp"
 
 namespace vrpc {
