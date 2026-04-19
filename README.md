@@ -32,6 +32,11 @@ make -j$(nproc)
 sudo make install
 ```
 
+### Uninstallation
+```shell
+sudo rm -rf usr/local/include/vrpc
+```
+
 ## TODO-Lists
 
 - [x] 服务端与客户端基本通信

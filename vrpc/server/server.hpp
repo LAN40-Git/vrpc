@@ -4,14 +4,14 @@
 #include "vrpc/common/concept.hpp"
 #include "vrpc/server/detail/context.hpp"
 #include "vrpc/server/detail/manager.hpp"
-#include "vrpc/server/detail/invoker.hpp"
 #include "vrpc/core/detail/protocol.hpp"
 
 namespace vrpc {
 class Server {
 public:
-    explicit Server(uint16_t port)
-        : port_(port) {}
+    explicit Server(uint16_t port, std::string_view ip = "0.0.0.0")
+        : port_(port)
+        , ip_(ip) {}
 
     // Delete copy
     Server(const Server&) = delete;
@@ -22,21 +22,29 @@ public:
     auto operator=(Server&&) -> Server& = delete;
 
 public:
+    [[nodiscard]]
+    auto port() const noexcept -> uint16_t {
+        return port_;
+    }
+
+    [[nodiscard]]
+    auto ip() const noexcept -> std::string_view {
+        return ip_;
+    }
+
+public:
     template <VrpcType S, VrpcType I>
     void register_invoke(
         S service_type,
         I invoke_type,
         const Invoke& invoke) {
-        invoker_.register_invoke(
-            static_cast<Type>(service_type),
-            static_cast<Type>(invoke_type),
-            invoke);
+        invokes_[static_cast<Type>(service_type)][static_cast<Type>(invoke_type)] = invoke;
     }
 
 public:
     [[REMEMBER_CO_AWAIT]]
     auto wait() -> kosio::async::Task<void> {
-        auto has_addr = kosio::net::SocketAddr::parse("0.0.0.0", port_);
+        auto has_addr = kosio::net::SocketAddr::parse(ip_, port_);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.error());
             co_return;
@@ -61,13 +69,11 @@ public:
                 LOG_ERROR("{}", ret.error());
                 continue;
             }
-            auto has_conn = co_await manager_.assign(peer_addr, std::move(stream));
-            if (!has_conn) {
-                LOG_ERROR("{}", has_conn.error());
+            auto conn = co_await manager_.assign(peer_addr, std::move(stream));
+            if (!conn) {
                 continue;
             }
             LOG_INFO("accept connection from {}", peer_addr);
-            auto conn = std::move(has_conn.value());
             kosio::spawn(handle_request_loop(conn));
             kosio::spawn(send_response_loop(conn));
         }
@@ -114,7 +120,7 @@ private:
             auto invoke_type = req_header.invoke_type;
 
             if (payload_size > buf.size()) {
-                LOG_ERROR("receive unusual invoke request from {}", conn->addr_);
+                LOG_ERROR("message from {} too large", conn->addr_);
                 break;
             }
 
@@ -154,7 +160,7 @@ private:
             detail::set_context(context);
 
             // 进行 RPC 调用
-            auto result = co_await invoker_.invoke(
+            auto result = co_await invoke(
                 request.service_type,
                 request.invoke_type,
                 request.req_payload,
@@ -175,11 +181,33 @@ private:
         manager_.remove(conn->addr_.to_string());
     }
 
+
+    [[REMEMBER_CO_AWAIT]]
+    auto invoke(
+        Type service_type,
+        Type invoke_type,
+        std::string_view req_payload,
+        std::span<char> resp_payload) -> kosio::async::Task<InvokeResult> {
+        auto it_service = invokes_.find(service_type);
+        if (it_service == invokes_.end()) {
+            co_return make_result(StatusCode::kNotFound);
+        }
+        auto it_invoke = it_service->second.find(invoke_type);
+        if (it_invoke == it_service->second.end()) {
+            co_return make_result(StatusCode::kNotFound);
+        }
+        auto& invoke = it_invoke->second;
+        co_return co_await invoke(req_payload, resp_payload);
+    }
+
 private:
-    uint16_t                  port_;
-    std::atomic<bool>         is_shutdown_{true};
-    detail::Invoker           invoker_;
-    detail::ConnectionManager manager_;
+    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, Invoke>>;
+
     kosio::sync::Latch        latch_{2};
+    uint16_t                  port_;
+    std::string               ip_;
+    std::atomic<bool>         is_shutdown_{true};
+    InvokeMap                 invokes_;
+    detail::ConnectionManager manager_;
 };
 } // namespace vrpc

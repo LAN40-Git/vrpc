@@ -39,6 +39,15 @@ public:
     auto operator=(Client&&) -> Client& = delete;
 
 public:
+    auto server_ip() const noexcept -> std::string_view {
+        return server_ip_;
+    }
+
+    auto server_port() const noexcept -> uint16_t {
+        return server_port_;
+    }
+
+public:
     template <Proto P, VrpcType S, VrpcType I>
     [[REMEMBER_CO_AWAIT]]
     auto call(

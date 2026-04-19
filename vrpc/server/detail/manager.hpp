@@ -2,7 +2,6 @@
 #include <ranges>
 #include <tbb/concurrent_hash_map.h>
 #include <kosio/net.hpp>
-#include "vrpc/common/error.hpp"
 #include "vrpc/core/detail/config.hpp"
 #include "vrpc/core/detail/request.hpp"
 
@@ -39,7 +38,7 @@ class ConnectionManager {
     using ConnectionMap = tbb::concurrent_hash_map<std::string, std::shared_ptr<Connection>>;
 public:
     [[REMEMBER_CO_AWAIT]]
-    auto assign(const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<Result<std::shared_ptr<Connection>>> {
+    auto assign(const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<std::shared_ptr<Connection>> {
         auto [sender, receiver] =
             RequestChannel::make(REQUEST_CHANNEL_CAPACITY);
         auto new_conn = std::make_shared<Connection>(addr, std::move(stream), std::move(sender), std::move(receiver));
@@ -47,7 +46,7 @@ public:
         {
             ConnectionMap::accessor acc;
             if (connections_.find(acc, addr_str)) {
-                co_return std::unexpected{make_error(Error::kRepeatedConnection)};
+                co_return nullptr;
             }
         }
         connections_.emplace(addr.to_string(), new_conn);
