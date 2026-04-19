@@ -42,10 +42,10 @@ requires requires(const T& msg, void* data, int size) {
 static auto make_result(const T& response, std::span<char> resp_payload) -> InvokeResult {
     const auto size = static_cast<uint32_t>(response.ByteSizeLong());
     if (size > resp_payload.size()) {
-        return make_result(StatusCode::kInternal);
+        return make_result(StatusCode::kUnknown);
     }
     if (!response.SerializeToArray(resp_payload.data(), size)) {
-        return make_result(StatusCode::kInternal);
+        return make_result(StatusCode::kUnknown);
     }
     return make_result(StatusCode::kOk, size);
 }

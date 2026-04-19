@@ -231,7 +231,7 @@ private:
             );
 
             if (!ret) {
-                co_await trigger_callback(request_id, StatusCode::kInternal, "");
+                co_await trigger_callback(request_id, StatusCode::kUnknown, "");
             }
         }
         latch_.count_down();

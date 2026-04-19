@@ -8,7 +8,7 @@ vrpc::Server server(8080);
 auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::InvokeResult> {
     MathAddReqeust request;
     if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
-        co_return vrpc::make_result(vrpc::StatusCode::kInternal);
+        co_return vrpc::make_result(vrpc::StatusCode::kUnknown);
     }
 
     auto augend = request.augend();
@@ -23,7 +23,7 @@ auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_
 auto handle_math_sub_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::InvokeResult> {
     MathSubReqeust request;
     if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
-        co_return vrpc::make_result(vrpc::StatusCode::kInternal);
+        co_return vrpc::make_result(vrpc::StatusCode::kUnknown);
     }
 
     auto minuend = request.minuend();
