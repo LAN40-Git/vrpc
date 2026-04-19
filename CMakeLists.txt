@@ -7,6 +7,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(${CMAKE_INSTALL_PREFIX} /usr/local)
 
+add_compile_definitions($<$<CONFIG:Debug>:ENABLE_KOSIO_LOG>)
+
 message(STATUS "Version: " "${CMAKE_PROJECT_VERSION}")
 message(STATUS "C++ standard: " "${CMAKE_CXX_STANDARD}")
 message(STATUS "Compiler: " "${CMAKE_CXX_COMPILER_ID}")
@@ -15,13 +17,22 @@ message(STATUS "Build type: " "${CMAKE_BUILD_TYPE}")
 # ====== LIBRARY ======
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBURING REQUIRED liburing)
+find_package(Protobuf REQUIRED)
 find_package(TBB REQUIRED)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 set(DEPEND_LIBS
         ${LIBURING_LIBRARIES}
+        ${PROTOBUF_LIBRARIES}
         tbb
+)
+
+# ====== INSTALL ======
+include(GNUInstallDirs)
+
+install(DIRECTORY vrpc/
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vrpc
 )
 
 # ====== EXAMPLES ======

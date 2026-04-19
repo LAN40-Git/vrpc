@@ -16,8 +16,8 @@ public:
     explicit Connection(
         const kosio::net::SocketAddr& addr,
         kosio::net::TcpStream stream,
-        RequestChannel::Sender sender,
-        RequestChannel::Receiver receiver)
+        RequestSender sender,
+        RequestReceiver receiver)
         : addr_(addr)
         , stream_(std::move(stream))
         , sender_(std::move(sender))
@@ -26,12 +26,12 @@ public:
         , resp_buf_(MAX_MESSAGE_SIZE) {}
 
 public:
-    kosio::net::SocketAddr   addr_;
-    kosio::net::TcpStream    stream_;
-    RequestChannel::Sender   sender_;
-    RequestChannel::Receiver receiver_;
-    std::vector<char>        req_buf_;
-    std::vector<char>        resp_buf_;
+    kosio::net::SocketAddr addr_;
+    kosio::net::TcpStream  stream_;
+    RequestSender          sender_;
+    RequestReceiver        receiver_;
+    std::vector<char>      req_buf_;
+    std::vector<char>      resp_buf_;
 };
 
 class ConnectionManager {

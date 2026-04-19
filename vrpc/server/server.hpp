@@ -1,6 +1,7 @@
 #pragma once
 #include <ranges>
 #include <kosio/net.hpp>
+#include "vrpc/common/concept.hpp"
 #include "vrpc/server/detail/context.hpp"
 #include "vrpc/server/detail/manager.hpp"
 #include "vrpc/server/detail/invoker.hpp"
@@ -21,11 +22,15 @@ public:
     auto operator=(Server&&) -> Server& = delete;
 
 public:
+    template <VrpcType S, VrpcType I>
     void register_invoke(
-        Type service_type,
-        Type invoke_type,
+        S service_type,
+        I invoke_type,
         const Invoke& invoke) {
-        invoker_.register_invoke(service_type, invoke_type, invoke);
+        invoker_.register_invoke(
+            static_cast<Type>(service_type),
+            static_cast<Type>(invoke_type),
+            invoke);
     }
 
 public:
@@ -45,7 +50,7 @@ public:
         auto listener = std::move(has_listener.value());
 
         is_shutdown_.store(false, std::memory_order_release);
-        LOG_INFO("vrpc server start on {}", addr_);
+        LOG_INFO("vrpc server listening on {}", addr);
         while (!is_shutdown_.load(std::memory_order_acquire)) {
             auto has_stream = co_await listener.accept();
             if (!has_stream) {
@@ -67,7 +72,7 @@ public:
             kosio::spawn(send_response_loop(conn));
         }
         co_await listener.close();
-        latch_.count_down();
+        co_await latch_.arrive_and_wait();
     }
 
     [[REMEMBER_CO_AWAIT]]
@@ -81,13 +86,13 @@ public:
 
         is_shutdown_.store(true, std::memory_order_release);
         co_await kosio::net::TcpStream::connect(addr);
-        co_await latch_.wait();
 
         while (!manager_.empty()) {
             co_await manager_.cancel_all();
-            co_await kosio::time::sleep(vrpc::detail::WAITING_INTERVAL_MS);
+            co_await kosio::time::sleep(detail::WAITING_INTERVAL_MS);
         }
         LOG_INFO("vrpc server on {} stop", addr);
+        co_await latch_.arrive_and_wait();
     }
 
 private:
@@ -96,7 +101,7 @@ private:
         auto& sender = conn->sender_;
         auto& buf = conn->req_buf_;
 
-        vrpc::detail::RequestHeader req_header;
+        detail::RequestHeader req_header;
         while (true) {
             if (auto ret = co_await stream.read_exact(
             {reinterpret_cast<char*>(&req_header), sizeof(req_header)}); !ret) {
@@ -109,7 +114,7 @@ private:
             auto invoke_type = req_header.invoke_type;
 
             if (payload_size > buf.size()) {
-                LOG_ERROR("receive unusual rpc message from {}", conn->addr_);
+                LOG_ERROR("receive unusual invoke request from {}", conn->addr_);
                 break;
             }
 
@@ -118,7 +123,7 @@ private:
                 break;
             }
 
-            vrpc::detail::Request request;
+            detail::Request request;
             request.request_id = request_id;
             request.service_type = service_type;
             request.invoke_type = invoke_type;
@@ -139,7 +144,7 @@ private:
         auto& buf = conn->resp_buf_;
         auto context = std::make_shared<detail::ServerConext>(conn->addr_);
 
-        vrpc::detail::ResponseHeader resp_header;
+        detail::ResponseHeader resp_header;
         while (true) {
             auto has_request = co_await receiver.recv();
             if (!has_request) {
@@ -175,6 +180,6 @@ private:
     std::atomic<bool>         is_shutdown_{true};
     detail::Invoker           invoker_;
     detail::ConnectionManager manager_;
-    kosio::sync::Latch        latch_{1};
+    kosio::sync::Latch        latch_{2};
 };
 } // namespace vrpc

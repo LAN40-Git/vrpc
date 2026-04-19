@@ -2,6 +2,7 @@
 #include <kosio/net.hpp>
 #include <kosio/sync.hpp>
 #include <tbb/concurrent_hash_map.h>
+#include "vrpc/common/concept.hpp"
 #include "vrpc/core/detail/config.hpp"
 #include "vrpc/core/detail/protocol.hpp"
 #include "vrpc/core/detail/request.hpp"
@@ -23,9 +24,9 @@ public:
         , server_port_(server_port)
         , stream_(kosio::net::detail::Socket{-1}) {
         auto [sender, receiver] =
-                            vrpc::detail::RequestChannel::make(vrpc::detail::REQUEST_CHANNEL_CAPACITY);
-        sender_ = std::move(sender);
-        receiver_ = std::move(receiver);
+                            detail::RequestChannel::make(detail::REQUEST_CHANNEL_CAPACITY);
+        sender_ = std::make_shared<detail::RequestSender>(std::move(sender));
+        receiver_ = std::make_shared<detail::RequestReceiver>(std::move(receiver));
     }
 
     // Delete copy
@@ -37,15 +38,12 @@ public:
     auto operator=(Client&&) -> Client& = delete;
 
 public:
-    template <typename T>
-    requires requires(const T& t) {
-        { t.SerializeAsString() } -> std::same_as<std::string>;
-    }
+    template <Proto P, VrpcType S, VrpcType I>
     [[REMEMBER_CO_AWAIT]]
     auto call(
-        Type service_type,
-        Type invoke_type,
-        const T& request,
+        S service_type,
+        I invoke_type,
+        const P& request,
         const Callback& callback) -> kosio::async::Task<StatusCode> {
         static std::atomic<uint64_t> current_request_id{0};
 
@@ -54,7 +52,12 @@ public:
         if (req_payload.size() > detail::MAX_MESSAGE_SIZE) {
             co_return StatusCode::kResourceExhausted;
         }
-        auto reqeust = detail::Request{request_id, service_type, invoke_type, std::move(req_payload), callback};
+        auto reqeust = detail::Request{
+            request_id,
+            static_cast<Type>(service_type),
+            static_cast<Type>(invoke_type),
+            std::move(req_payload),
+            callback};
 
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
@@ -70,7 +73,10 @@ public:
                 kosio::spawn(connect());
             }
         }
-        co_await sender_.send(reqeust);
+        if (auto ret = co_await sender_->send(reqeust); !ret) {
+            LOG_ERROR("{}", ret.error());
+        }
+        co_return StatusCode::kOk;
     }
 
     [[REMEMBER_CO_AWAIT]]
@@ -78,41 +84,54 @@ public:
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
         status_ = Status::kShutdown;
+        sender_->close();
         co_await latch_.wait();
     }
 
 private:
+    static auto do_avoid(int retry_times) noexcept -> std::size_t {
+        return std::min(detail::MAX_CONNECT_BLOCK_OFF, retry_times * detail::CONNECT_MULTIPLIER * detail::INITIAL_CONNECT_BLOCK_OFF);
+    }
+
     auto connect() -> kosio::async::Task<void> {
-        auto has_addr = kosio::net::SocketAddr::parse(server_ip_, server_port_);
-        if (!has_addr) {
-            LOG_ERROR("{}", has_addr.error());
-            co_return;
-        }
-        auto addr = has_addr.value();
+        // 重试次数
+        std::size_t n{0};
+        while (true) {
+            ++n;
+            auto has_addr = kosio::net::SocketAddr::parse(server_ip_, server_port_);
+            if (!has_addr) {
+                LOG_ERROR("{}", has_addr.error());
+                break;
+            }
+            auto addr = has_addr.value();
 
-        auto has_stream = co_await kosio::net::TcpStream::connect(addr);
-        if (!has_stream) {
-            LOG_ERROR("{}", has_addr.error());
-            co_return;
-        }
+            auto has_stream = co_await kosio::net::TcpStream::connect(addr);
+            if (!has_stream) {
+                LOG_VERBOSE("{}", has_stream.error());
+                // 避让
+                co_await kosio::time::sleep(do_avoid(n));
+                continue;
+            }
 
-        if (auto ret = has_stream.value().set_nodelay(true); !ret) {
-            LOG_ERROR("{}", ret.error());
-            co_return;
-        }
+            if (auto ret = has_stream.value().set_nodelay(true); !ret) {
+                LOG_VERBOSE("{}", ret.error());
+                continue;
+            }
 
-        LOG_INFO("connect to {}", addr);
-        co_await mutex_.lock();
-        std::lock_guard lock{mutex_, std::adopt_lock};
-        // 连接建立成功时，可能通道已经关闭，此时直接返回
-        if (status_ == Status::kShutdown) {
+            LOG_INFO("connect to {}", addr);
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            // 连接建立成功时，可能通道已经关闭，此时直接返回
+            if (status_ == Status::kShutdown) {
+                co_return;
+            }
+            status_ = Status::kConnected;
+            callbacks_.clear();
+            stream_ = std::move(has_stream.value());
+            kosio::spawn(handle_response_loop());
+            kosio::spawn(send_request_loop());
             co_return;
         }
-        status_ = Status::kConnected;
-        callbacks_.clear();
-        stream_ = std::move(has_stream.value());
-        kosio::spawn(handle_response_loop());
-        kosio::spawn(send_request_loop());
     }
 
     auto trigger_callback(uint64_t request_id, StatusCode code, std::string_view resp_payload) -> kosio::async::Task<void> {
@@ -143,7 +162,7 @@ private:
             auto payload_size = be32toh(resp_header.payload_size);
             auto code = resp_header.code;
 
-            if (payload_size > vrpc::detail::MAX_MESSAGE_SIZE) {
+            if (payload_size > detail::MAX_MESSAGE_SIZE) {
                 LOG_ERROR("receive unusual message");
                 break;
             }
@@ -157,13 +176,13 @@ private:
 
             co_await trigger_callback(request_id, code, {buf.data(), payload_size});
         }
-        LOG_INFO("connection to {}:{} closed", server_ip_, server_port_);
+        LOG_INFO("connection on {}:{} closed", server_ip_, server_port_);
     }
 
     auto send_request_loop() -> kosio::async::Task<void> {
         detail::RequestHeader req_header;
         while (true) {
-            auto has_request = co_await receiver_.recv();
+            auto has_request = co_await receiver_->recv();
             if (!has_request) {
                 break;
             }
@@ -189,14 +208,14 @@ private:
     }
 
 private:
-    std::string                      server_ip_;
-    uint16_t                         server_port_;
-    kosio::net::TcpStream            stream_;
-    kosio::sync::Mutex               mutex_;
-    kosio::sync::Latch               latch_{1};
-    Status                           status_{Status::kDisconnected};
-    detail::RequestChannel::Sender   sender_{nullptr};
-    detail::RequestChannel::Receiver receiver_{nullptr};
-    CallbackMap                      callbacks_;
+    std::string                              server_ip_;
+    uint16_t                                 server_port_;
+    kosio::net::TcpStream                    stream_;
+    kosio::sync::Mutex                       mutex_;
+    kosio::sync::Latch                       latch_{1};
+    Status                                   status_{Status::kDisconnected};
+    std::shared_ptr<detail::RequestSender>   sender_{nullptr};
+    std::shared_ptr<detail::RequestReceiver> receiver_{nullptr};
+    CallbackMap                              callbacks_;
 };
 } // namespace vrpc

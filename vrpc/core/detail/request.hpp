@@ -12,6 +12,7 @@ struct Request {
     std::string req_payload{};
     Callback    callback{};
 };
-
 using RequestChannel = kosio::sync::Channel<Request>;
+using RequestSender = RequestChannel::Sender;
+using RequestReceiver = RequestChannel::Receiver;
 } // namespace vrpc::detail

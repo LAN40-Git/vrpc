@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+message MathAddReqeust {
+  int64 augend = 1;
+  int64 addend = 2;
+}
+
+message MathAddResponse {
+  int64 result = 1;
+}
+
+message MathSubReqeust {
+  int64 minuend = 1;
+  int64 subtrahend = 2;
+}
+
+message MathSubResponse {
+  int64 result = 1;
+}
