@@ -1,5 +1,5 @@
 #pragma once
-#include "vrpc/core/type.hpp"
+#include "../vrpc/net/pb/type.hpp"
 #include "pb/math.pb.h"
 
 enum class ServiceType : vrpc::Type {

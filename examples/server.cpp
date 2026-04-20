@@ -3,9 +3,9 @@
 
 #include <kosio/signal/signal.hpp>
 
-vrpc::Server server(8080);
+vrpc::TcpServer server(8080);
 
-auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::InvokeResult> {
+auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::RpcResult> {
     MathAddReqeust request;
     if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
         co_return vrpc::make_result(vrpc::StatusCode::kUnknown);
@@ -20,7 +20,7 @@ auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_
     co_return vrpc::make_result(response, resp_payload);
 }
 
-auto handle_math_sub_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::InvokeResult> {
+auto handle_math_sub_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::RpcResult> {
     MathSubReqeust request;
     if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
         co_return vrpc::make_result(vrpc::StatusCode::kUnknown);

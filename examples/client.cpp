@@ -32,7 +32,7 @@ auto handle_math_sub_response(vrpc::StatusCode code, std::string_view resp_paylo
     LOG_INFO("get math sub result: {}", response.result());
 }
 
-auto send_math_add_request(vrpc::Client& client, int64_t augend, int64_t addend) -> kosio::async::Task<void> {
+auto send_math_add_request(vrpc::TcpClient& client, int64_t augend, int64_t addend) -> kosio::async::Task<void> {
     LOG_INFO("i want to know {} + {} = ?", augend, addend);
     MathAddReqeust request;
     request.set_augend(augend);
@@ -40,7 +40,7 @@ auto send_math_add_request(vrpc::Client& client, int64_t augend, int64_t addend)
     co_await client.call(ServiceType::kMath, InvokeType::kMathAdd, request, handle_math_add_response);
 }
 
-auto send_math_sub_request(vrpc::Client& client, int64_t minuend, int64_t subtrahend) -> kosio::async::Task<void> {
+auto send_math_sub_request(vrpc::TcpClient& client, int64_t minuend, int64_t subtrahend) -> kosio::async::Task<void> {
     LOG_INFO("i want to know {} - {} = ?", minuend, subtrahend);
     MathSubReqeust request;
     request.set_minuend(minuend);
@@ -48,7 +48,7 @@ auto send_math_sub_request(vrpc::Client& client, int64_t minuend, int64_t subtra
     co_await client.call(ServiceType::kMath, InvokeType::kMathSub, request, handle_math_sub_response);
 }
 
-auto shutdown_handler(vrpc::Client& client, uint64_t timeout = 0) -> kosio::async::Task<void> {
+auto shutdown_handler(vrpc::TcpClient& client, uint64_t timeout = 0) -> kosio::async::Task<void> {
     if (timeout == 0) {
         co_await kosio::signal::ctrl_c();
     } else {
@@ -58,7 +58,7 @@ auto shutdown_handler(vrpc::Client& client, uint64_t timeout = 0) -> kosio::asyn
 }
 
 auto main_loop() -> kosio::async::Task<void> {
-    auto client = vrpc::Client("localhost", 8080);
+    auto client = vrpc::TcpClient("localhost", 8080);
     co_await send_math_add_request(client, 199, 311);
     co_await send_math_sub_request(client, 36, 21);
     co_await shutdown_handler(client);

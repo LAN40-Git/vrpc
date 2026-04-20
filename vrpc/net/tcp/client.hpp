@@ -3,13 +3,13 @@
 #include <kosio/sync.hpp>
 #include <tbb/concurrent_hash_map.h>
 #include "vrpc/common/concept.hpp"
-#include "vrpc/core/detail/config.hpp"
-#include "vrpc/core/detail/protocol.hpp"
-#include "vrpc/core/detail/request.hpp"
+#include "vrpc/net/pb/message.hpp"
+#include "vrpc/net/pb/result.hpp"
+#include "vrpc/net/builder.hpp"
 
 namespace vrpc {
-class Client {
-    using CallbackMap = tbb::concurrent_hash_map<uint64_t, Callback>;
+class TcpClient {
+    using RpcCallbackMap = tbb::concurrent_hash_map<uint64_t, RpcCallback>;
 
     enum class Status {
         kConnecting,
@@ -19,60 +19,65 @@ class Client {
         kShutdown
     };
 
-public:
-    explicit Client(std::string_view server_ip, uint16_t server_port)
-        : server_ip_(server_ip)
-        , server_port_(server_port)
+private:
+    explicit TcpClient(const detail::Config& config)
+        : config_(config)
         , stream_(kosio::net::detail::Socket{-1}) {
         auto [sender, receiver] =
-                            detail::RequestChannel::make(detail::REQUEST_CHANNEL_CAPACITY);
-        sender_ = std::make_shared<detail::RequestSender>(std::move(sender));
-        receiver_ = std::make_shared<detail::RequestReceiver>(std::move(receiver));
+                            detail::RpcChannel::make(config_.channel_capacity);
+        sender_ = std::make_shared<detail::RpcSender>(std::move(sender));
+        receiver_ = std::make_shared<detail::RpcReceiver>(std::move(receiver));
     }
 
+public:
     // Delete copy
-    Client(const Client&) = delete;
-    auto operator=(const Client&) -> Client& = delete;
+    TcpClient(const TcpClient&) = delete;
+    auto operator=(const TcpClient&) -> TcpClient& = delete;
 
     // Delete move
-    Client(Client&&) = delete;
-    auto operator=(Client&&) -> Client& = delete;
+    TcpClient(TcpClient&&) = delete;
+    auto operator=(TcpClient&&) -> TcpClient& = delete;
 
 public:
     auto server_ip() const noexcept -> std::string_view {
-        return server_ip_;
+        return config_.ip;
     }
 
     auto server_port() const noexcept -> uint16_t {
-        return server_port_;
+        return config_.port;
     }
 
 public:
-    template <Proto P, VrpcType S, VrpcType I>
+    template <ProtobufMessage P>
     [[REMEMBER_CO_AWAIT]]
     auto call(
-        S service_type,
-        I invoke_type,
+        std::string service_name,
+        std::string method_name,
         const P& request,
-        const Callback& callback) -> kosio::async::Task<StatusCode> {
-        auto request_id = current_request_id_.fetch_add(1);
+        const RpcCallback& callback) -> kosio::async::Task<vrpc::Status::Code> {
+        auto seq = current_seq_.fetch_add(1);
         auto req_payload = request.SerializeAsString();
-        if (req_payload.size() > detail::MAX_MESSAGE_SIZE) {
-            co_return StatusCode::kResourceExhausted;
+        if (req_payload.size() > config_.max_message_size) {
+            co_return vrpc::Status::kResourceExhausted;
         }
-        auto reqeust = detail::Request{
-            request_id,
-            static_cast<Type>(service_type),
-            static_cast<Type>(invoke_type),
-            std::move(req_payload),
-            callback};
+        auto message = RpcMessage{
+            .seq = seq,
+            .service_name_len = static_cast<uint32_t>(service_name.size()),
+            .service_name = service_name,
+            .method_name_len = static_cast<uint32_t>(method_name.size()),
+            .method_name = method_name,
+            .payload_size = req_payload.size(),
+            .payload = req_payload,
+            .status_code = vrpc::Status::kOk,
+        };
+        message.encode_check_sum();
 
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
         // 通道关闭，RPC 服务不可用
         if (status_ == Status::kShuttingDown ||
             status_ == Status::kShutdown) {
-            co_return StatusCode::kUnavailable;
+            co_return vrpc::Status::kUnavailable;
         }
         // 连接未建立
         if (status_ == Status::kDisconnected) {
@@ -82,10 +87,11 @@ public:
                 kosio::spawn(connect());
             }
         }
-        if (auto ret = co_await sender_->send(reqeust); !ret) {
+        if (auto ret = co_await sender_->send(message); !ret) {
             LOG_ERROR("{}", ret.error());
         }
-        co_return StatusCode::kOk;
+        callbacks_.emplace(seq, callback);
+        co_return vrpc::Status::kOk;
     }
 
     [[REMEMBER_CO_AWAIT]]
@@ -99,7 +105,7 @@ public:
 
         while (true) {
             co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
-            co_await kosio::time::sleep(detail::WAITING_INTERVAL_MS);
+            co_await kosio::time::sleep(config_.shutdown_waiting_interval);
             co_await mutex_.lock();
             std::lock_guard lock{mutex_, std::adopt_lock};
             if (status_ == Status::kShutdown) {
@@ -110,17 +116,17 @@ public:
     }
 
 private:
-    static auto do_avoid(int retry_times) noexcept -> std::size_t {
-        return std::min(detail::MAX_CONNECT_BLOCK_OFF,
-            retry_times * detail::CONNECT_MULTIPLIER * detail::INITIAL_CONNECT_BLOCK_OFF);
+    [[nodiscard]]
+    auto do_avoid(int retry_times) const -> std::size_t {
+        return std::min(config_.max_connect_timeout,
+            static_cast<std::size_t>(retry_times * 2 * 1000));
     }
 
     auto connect() -> kosio::async::Task<void> {
         // 重试次数
-        std::size_t n{0};
+        std::size_t n{1};
         while (true) {
-            ++n;
-            auto has_addr = kosio::net::SocketAddr::parse(server_ip_, server_port_);
+            auto has_addr = kosio::net::SocketAddr::parse(config_.ip, config_.port);
             if (!has_addr) {
                 LOG_ERROR("{}", has_addr.error());
                 break;
@@ -130,8 +136,7 @@ private:
             auto has_stream = co_await kosio::net::TcpStream::connect(addr);
             if (!has_stream) {
                 LOG_VERBOSE("{}", has_stream.error());
-                // 避让
-                co_await kosio::time::sleep(do_avoid(n));
+                co_await kosio::time::sleep(do_avoid(n++));
                 continue;
             }
 
@@ -156,10 +161,10 @@ private:
         }
     }
 
-    auto trigger_callback(uint64_t request_id, StatusCode code, std::string_view resp_payload) -> kosio::async::Task<void> {
-        Callback callback;
+    auto trigger_callback(uint64_t request_id, vrpc::Status::Code code, std::string_view resp_payload) -> kosio::async::Task<void> {
+        RpcCallback callback;
         {
-            CallbackMap::accessor acc;
+            RpcCallbackMap::accessor acc;
             if (!callbacks_.find(acc, request_id)) {
                 co_return;
             }
@@ -171,18 +176,18 @@ private:
 
 private:
     auto handle_response_loop() -> kosio::async::Task<void> {
-        std::vector<char> buf(detail::MAX_MESSAGE_SIZE);
+        std::vector<char> buf(config_.max_message_size);
 
-        detail::ResponseHeader resp_header;
+        RpcMessage message;
         while (true) {
             if (auto ret = co_await stream_.read_exact(
-                {reinterpret_cast<char*>(&resp_header), sizeof(resp_header)}); !ret) {
+                {reinterpret_cast<char*>(&message), sizeof(message)}); !ret) {
                 break;
             }
 
-            auto request_id = be64toh(resp_header.request_id);
-            auto payload_size = be32toh(resp_header.payload_size);
-            auto code = resp_header.code;
+            auto request_id = be64toh(message.request_id);
+            auto payload_size = be32toh(message.payload_size);
+            auto code = message.code;
 
             if (payload_size > detail::MAX_MESSAGE_SIZE) {
                 LOG_ERROR("receive unusual message");
@@ -238,18 +243,17 @@ private:
     }
 
 private:
-    using RequestSenderPtr = std::shared_ptr<detail::RequestSender>;
-    using RequestReceiverPtr = std::shared_ptr<detail::RequestReceiver>;
+    using RpcSenderPtr = std::shared_ptr<detail::RpcSender>;
+    using RpcReceiverPtr = std::shared_ptr<detail::RpcReceiver>;
 
-    std::string           server_ip_;
-    uint16_t              server_port_;
+    detail::Config        config_;
     kosio::net::TcpStream stream_;
     kosio::sync::Mutex    mutex_;
     kosio::sync::Latch    latch_{1};
-    std::atomic<uint64_t> current_request_id_{0};
+    std::atomic<uint64_t> current_seq_{0};
     Status                status_{Status::kDisconnected};
-    RequestSenderPtr      sender_{nullptr};
-    RequestReceiverPtr    receiver_{nullptr};
-    CallbackMap           callbacks_;
+    RpcSenderPtr          sender_{nullptr};
+    RpcReceiverPtr        receiver_{nullptr};
+    RpcCallbackMap        callbacks_;
 };
 } // namespace vrpc

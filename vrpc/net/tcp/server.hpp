@@ -7,19 +7,19 @@
 #include "vrpc/core/detail/protocol.hpp"
 
 namespace vrpc {
-class Server {
+class TcpServer {
 public:
-    explicit Server(uint16_t port, std::string_view ip = "0.0.0.0")
+    explicit TcpServer(uint16_t port, std::string_view ip = "0.0.0.0")
         : port_(port)
         , ip_(ip) {}
 
     // Delete copy
-    Server(const Server&) = delete;
-    auto operator=(const Server&) -> Server& = delete;
+    TcpServer(const TcpServer&) = delete;
+    auto operator=(const TcpServer&) -> TcpServer& = delete;
 
     // Delete move
-    Server(Server&&) = delete;
-    auto operator=(Server&&) -> Server& = delete;
+    TcpServer(TcpServer&&) = delete;
+    auto operator=(TcpServer&&) -> TcpServer& = delete;
 
 public:
     [[nodiscard]]
@@ -37,7 +37,7 @@ public:
     void register_invoke(
         S service_type,
         I invoke_type,
-        const Invoke& invoke) {
+        const Method& invoke) {
         invokes_[static_cast<Type>(service_type)][static_cast<Type>(invoke_type)] = invoke;
     }
 
@@ -187,7 +187,7 @@ private:
         Type service_type,
         Type invoke_type,
         std::string_view req_payload,
-        std::span<char> resp_payload) -> kosio::async::Task<InvokeResult> {
+        std::span<char> resp_payload) -> kosio::async::Task<RpcResult> {
         auto it_service = invokes_.find(service_type);
         if (it_service == invokes_.end()) {
             co_return make_result(StatusCode::kNotFound);
@@ -201,7 +201,7 @@ private:
     }
 
 private:
-    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, Invoke>>;
+    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, Method>>;
 
     kosio::sync::Latch        latch_{2};
     uint16_t                  port_;

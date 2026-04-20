@@ -6,7 +6,7 @@
 #include "vrpc/core/detail/request.hpp"
 
 namespace vrpc {
-class Server;
+class TcpServer;
 } // namespace vrpc
 
 namespace vrpc::detail {
@@ -34,7 +34,7 @@ public:
 };
 
 class ConnectionManager {
-    friend class vrpc::Server;
+    friend class vrpc::TcpServer;
     using ConnectionMap = tbb::concurrent_hash_map<std::string, std::shared_ptr<Connection>>;
 public:
     [[REMEMBER_CO_AWAIT]]
