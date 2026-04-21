@@ -51,14 +51,14 @@ public:
     template <ProtobufMessage P>
     [[REMEMBER_CO_AWAIT]]
     auto call(
-        std::string&& service_name,
-        std::string&& method_name,
+        std::string_view service_name,
+        std::string_view method_name,
         const P& request,
         const RpcCallback& callback) -> kosio::async::Task<vrpc::Status::Code> {
         // 构造报文
         detail::RpcRequestMessage message;
-        message.set_service_name(std::move(service_name));
-        message.set_method_name(std::move(method_name));
+        message.set_service_name(service_name);
+        message.set_method_name(method_name);
         message.set_payload(request.SerializeAsString());
 
         // 校验大小
@@ -157,17 +157,17 @@ private:
         }
     }
 
-    auto trigger_callback(uint64_t request_id, vrpc::Status::Code code, std::string_view resp_payload) -> kosio::async::Task<void> {
+    auto trigger_callback(detail::RpcResponseMessage response) -> kosio::async::Task<void> {
         RpcCallback callback;
         {
             RpcCallbackMap::accessor acc;
-            if (!callbacks_.find(acc, request_id)) {
+            if (!callbacks_.find(acc, response.seq)) {
                 co_return;
             }
             callback = std::move(acc->second);
         }
-        callbacks_.erase(request_id);
-        co_await callback(code, resp_payload);
+        callbacks_.erase(response.seq);
+        co_await callback(static_cast<vrpc::Status::Code>(response.status_code), response.payload);
     }
 
 private:
@@ -182,13 +182,28 @@ private:
             }
 
             auto msg_size = be32toh(header.msg_size);
+            if (msg_size > detail::MAX_RPC_MESSAGE_SIZE) {
+                LOG_ERROR("rpc response message too large");
+                break;
+            }
 
             // 读取报文
+            if (auto ret = co_await stream_.read_exact(
+            std::span<char>(buf.data(), msg_size)); !ret) {
+                break;
+            }
 
+            // 解析报文
+            detail::RpcResponseMessage response;
+            if (!response.parse_from(buf.data(), msg_size)) {
+                LOG_ERROR("rpc response message parse failed");
+                break;
+            }
 
-            co_await trigger_callback(request_id, code, {buf.data(), payload_size});
+            // 启动回调协程
+            kosio::spawn(trigger_callback(std::move(response)));
         }
-        LOG_INFO("connection on {}:{} closed", server_ip_, server_port_);
+        LOG_INFO("connection on {}:{} closed", config_.ip, config_.port);
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
         if (status_ != Status::kShuttingDown) {
@@ -199,45 +214,36 @@ private:
     }
 
     auto send_request_loop() -> kosio::async::Task<void> {
-        detail::RequestHeader req_header;
+        detail::RpcMessageHeader header;
         while (true) {
-            auto has_request = co_await receiver_->recv();
-            if (!has_request) {
+            auto has_message = co_await receiver_->recv();
+            if (!has_message) {
                 break;
             }
-            auto request = std::move(has_request.value());
-            auto request_id = request.request_id;
-            auto& req_payload = request.req_payload;
-            req_header.request_id = htobe64(request_id);
-            req_header.payload_size = htobe32(req_payload.size());
-            req_header.service_type = request.service_type;
-            req_header.invoke_type = request.invoke_type;
-
-            callbacks_.emplace(request.request_id, std::move(request.callback));
+            auto message = std::move(has_message.value());
+            message.seq = htobe64(message.seq);
 
             auto ret = co_await stream_.write_vectored(
-                std::span<const char>(reinterpret_cast<char*>(&req_header), sizeof(req_header)),
-                std::span<const char>(req_payload.data(), req_payload.size())
+                std::span<const char>(reinterpret_cast<char*>(&message.seq), sizeof(message.seq)),
+                std::span<const char>(reinterpret_cast<char*>(&message.seq), sizeof(message.seq)),
             );
 
-            if (!ret) {
-                co_await trigger_callback(request_id, StatusCode::kUnknown, "");
-            }
+
         }
         latch_.count_down();
     }
 
 private:
-    using RpcSenderPtr = std::shared_ptr<detail::RpcSender>;
-    using RpcReceiverPtr = std::shared_ptr<detail::RpcReceiver>;
+    using RpcRequestSenderPtr = std::shared_ptr<detail::RpcRequestSender>;
+    using RpcRequestReceiverPtr = std::shared_ptr<detail::RpcRequestReceiver>;
 
     detail::Config        config_;
     kosio::net::TcpStream stream_;
     kosio::sync::Mutex    mutex_;
     kosio::sync::Latch    latch_{1};
     Status                status_{Status::kDisconnected};
-    RpcSenderPtr          sender_{nullptr};
-    RpcReceiverPtr        receiver_{nullptr};
+    RpcRequestSenderPtr   sender_{nullptr};
+    RpcRequestReceiverPtr receiver_{nullptr};
     RpcCallbackMap        callbacks_;
 };
 } // namespace vrpc
