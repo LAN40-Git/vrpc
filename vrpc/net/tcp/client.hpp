@@ -3,11 +3,11 @@
 #include <kosio/sync.hpp>
 #include <tbb/concurrent_hash_map.h>
 #include "vrpc/common/concept.hpp"
-#include "vrpc/net/pb/message.hpp"
-#include "vrpc/net/pb/result.hpp"
+#include "vrpc/net/pb/detail/channel.hpp"
 #include "vrpc/net/builder.hpp"
 
 namespace vrpc {
+using RpcCallback = std::function<kosio::async::Task<void>(Status::Code, std::string_view)>;
 class TcpClient {
     using RpcCallbackMap = tbb::concurrent_hash_map<uint64_t, RpcCallback>;
 
@@ -24,9 +24,9 @@ private:
         : config_(config)
         , stream_(kosio::net::detail::Socket{-1}) {
         auto [sender, receiver] =
-                            detail::RpcChannel::make(config_.channel_capacity);
-        sender_ = std::make_shared<detail::RpcSender>(std::move(sender));
-        receiver_ = std::make_shared<detail::RpcReceiver>(std::move(receiver));
+                            detail::RpcRequestChannel::make(config_.channel_capacity);
+        sender_ = std::make_shared<detail::RpcRequestSender>(std::move(sender));
+        receiver_ = std::make_shared<detail::RpcRequestReceiver>(std::move(receiver));
     }
 
 public:
@@ -51,26 +51,20 @@ public:
     template <ProtobufMessage P>
     [[REMEMBER_CO_AWAIT]]
     auto call(
-        std::string service_name,
-        std::string method_name,
+        std::string&& service_name,
+        std::string&& method_name,
         const P& request,
         const RpcCallback& callback) -> kosio::async::Task<vrpc::Status::Code> {
-        auto seq = current_seq_.fetch_add(1);
-        auto req_payload = request.SerializeAsString();
-        if (req_payload.size() > config_.max_message_size) {
+        // 构造报文
+        detail::RpcRequestMessage message;
+        message.set_service_name(std::move(service_name));
+        message.set_method_name(std::move(method_name));
+        message.set_payload(request.SerializeAsString());
+
+        // 校验大小
+        if (message.bytes_size() > detail::MAX_RPC_MESSAGE_SIZE) {
             co_return vrpc::Status::kResourceExhausted;
         }
-        auto message = RpcMessage{
-            .seq = seq,
-            .service_name_len = static_cast<uint32_t>(service_name.size()),
-            .service_name = service_name,
-            .method_name_len = static_cast<uint32_t>(method_name.size()),
-            .method_name = method_name,
-            .payload_size = req_payload.size(),
-            .payload = req_payload,
-            .status_code = vrpc::Status::kOk,
-        };
-        message.encode_check_sum();
 
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
@@ -87,8 +81,10 @@ public:
                 kosio::spawn(connect());
             }
         }
+        auto seq = message.seq;
         if (auto ret = co_await sender_->send(message); !ret) {
             LOG_ERROR("{}", ret.error());
+            co_return vrpc::Status::kInternal;
         }
         callbacks_.emplace(seq, callback);
         co_return vrpc::Status::kOk;
@@ -133,7 +129,7 @@ private:
             }
             auto addr = has_addr.value();
 
-            auto has_stream = co_await kosio::net::TcpStream::connect(addr);
+            auto has_stream = co_await kosio::net::TcpStream::connect(addr).set_timeout(config_.max_connect_timeout);
             if (!has_stream) {
                 LOG_VERBOSE("{}", has_stream.error());
                 co_await kosio::time::sleep(do_avoid(n++));
@@ -176,30 +172,19 @@ private:
 
 private:
     auto handle_response_loop() -> kosio::async::Task<void> {
-        std::vector<char> buf(config_.max_message_size);
-
-        RpcMessage message;
+        std::vector<char> buf(detail::MAX_RPC_MESSAGE_SIZE);
+        detail::RpcMessageHeader header;
         while (true) {
+            // 读取报文头
             if (auto ret = co_await stream_.read_exact(
-                {reinterpret_cast<char*>(&message), sizeof(message)}); !ret) {
+                std::span<char>(reinterpret_cast<char*>(&header), sizeof(header))); !ret) {
                 break;
             }
 
-            auto request_id = be64toh(message.request_id);
-            auto payload_size = be32toh(message.payload_size);
-            auto code = message.code;
+            auto msg_size = be32toh(header.msg_size);
 
-            if (payload_size > detail::MAX_MESSAGE_SIZE) {
-                LOG_ERROR("receive unusual message");
-                break;
-            }
+            // 读取报文
 
-            if (payload_size > 0) {
-                if (auto ret = co_await stream_.read_exact({buf.data(), payload_size}); !ret) {
-                    LOG_ERROR("failed to receive response payload: {}", ret.error());
-                    break;
-                }
-            }
 
             co_await trigger_callback(request_id, code, {buf.data(), payload_size});
         }
@@ -250,7 +235,6 @@ private:
     kosio::net::TcpStream stream_;
     kosio::sync::Mutex    mutex_;
     kosio::sync::Latch    latch_{1};
-    std::atomic<uint64_t> current_seq_{0};
     Status                status_{Status::kDisconnected};
     RpcSenderPtr          sender_{nullptr};
     RpcReceiverPtr        receiver_{nullptr};

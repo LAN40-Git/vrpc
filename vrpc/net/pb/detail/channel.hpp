@@ -1,12 +1,14 @@
 #pragma once
 #include <kosio/sync.hpp>
-
-namespace vrpc {
-class RpcMessage;
-} // namespace vrpc
+#include "vrpc/net/pb/status.hpp"
+#include "vrpc/net/pb/detail/message.hpp"
 
 namespace vrpc::detail {
-using RpcChannel = kosio::sync::Channel<RpcMessage>;
-using RpcSender = RpcChannel::Sender;
-using RpcReceiver = RpcChannel::Receiver;
+using RpcRequestChannel = kosio::sync::Channel<RpcRequestMessage>;
+using RpcRequestSender = RpcRequestChannel::Sender;
+using RpcRequestReceiver = RpcRequestChannel::Receiver;
+
+using RpcResponseChannel = kosio::sync::Channel<RpcResponseMessage>;
+using RpcResponseSender = RpcResponseChannel::Sender;
+using RpcResponseReceiver = RpcResponseChannel::Receiver;
 } // namespace vrpc::detail

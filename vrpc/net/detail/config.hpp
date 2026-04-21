@@ -4,9 +4,6 @@
 
 namespace vrpc::detail {
 struct Config {
-    // 最大消息长度-bytes
-    const std::size_t max_message_size{4 * 1024 * 1024};
-
     // ip
     std::string ip{"127.0.0.1"};
 
