@@ -3,15 +3,14 @@
 #include <thread>
 
 namespace vrpc::detail {
+static constexpr std::size_t SHUT_DOWN_WAITING_INTERVAL{10};
+
 struct Config {
     // ip
     std::string ip{"127.0.0.1"};
 
     // port
     uint16_t port{19999};
-
-    // 关闭连接时循环中等待的时间间隔
-    std::size_t shutdown_waiting_interval{10};
 
     // 最大连接超时-ms
     std::size_t max_connect_timeout{60 * 1000};

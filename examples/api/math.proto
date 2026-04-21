@@ -17,8 +17,3 @@ message MathSubRequest {
 message MathSubResponse {
   int64 result = 1;
 }
-
-service MathService {
-  rpc add (MathAddRequest) returns (MathAddResponse);
-  rpc sub (MathSubRequest) returns (MathSubResponse);
-}

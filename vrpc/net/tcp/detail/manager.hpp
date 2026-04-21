@@ -21,8 +21,7 @@ public:
         , stream_(std::move(stream))
         , sender_(std::move(sender))
         , receiver_(std::move(receiver))
-        , req_buf_(MAX_RPC_MESSAGE_SIZE)
-        , resp_buf_(MAX_RPC_MESSAGE_SIZE) {}
+        , req_buf_(MAX_RPC_MESSAGE_SIZE) {}
 
 public:
     kosio::net::SocketAddr addr_;
@@ -30,7 +29,6 @@ public:
     RpcRequestSender       sender_;
     RpcRequestReceiver     receiver_;
     std::vector<char>      req_buf_;
-    std::vector<char>      resp_buf_;
 };
 
 class ConnectionManager {
@@ -71,4 +69,4 @@ public:
 private:
     ConnectionMap connections_;
 };
-} // namespace vrpc::server::detail
+} // namespace vrpc::detail

@@ -2,21 +2,23 @@
 #include <cstring>
 #include <string>
 #include <optional>
+#include "vrpc/net/pb/status.hpp"
 #include "vrpc/common/util/crc32.hpp"
 #include "vrpc/common/util/sequence.hpp"
 
-namespace vrpc::detail {
+namespace vrpc {
+namespace detail {
 constexpr uint32_t MAX_RPC_MESSAGE_SIZE = 4 * 1024 * 1024;
-
 struct RpcMessageHeader {
     uint32_t msg_size; // 报文总大小
 };
+} // namespace detail
 
 class RpcRequestMessage {
 public:
     RpcRequestMessage() = default;
 
-    explicit RpcRequestMessage(std::string_view service_name, std::string_view method_name, std::string payload)
+    explicit RpcRequestMessage(std::string_view service_name, std::string_view method_name, std::string&& payload)
         : seq_(util::generate_sequence())
         , service_name_size_(service_name.size())
         , service_name_(service_name)
@@ -161,10 +163,9 @@ private:
 
 class RpcResponseMessage {
 public:
-    RpcResponseMessage() = default;
-
-    explicit RpcResponseMessage(uint64_t seq, std::string&& err_msg, std::string&& payload)
+    explicit RpcResponseMessage(uint64_t seq, Status::Code status_code, std::string_view err_msg, std::string&& payload)
         : seq_(seq)
+        , status_(status_code)
         , err_msg_size_(err_msg.size())
         , err_msg_(std::move(err_msg))
         , payload_size_(payload.size())
@@ -178,16 +179,19 @@ public:
     RpcResponseMessage(RpcResponseMessage&&) = default;
     auto operator=(RpcResponseMessage&&) -> RpcResponseMessage& = default;
 
+private:
+    RpcResponseMessage() = default;
+
 public:
     uint64_t    seq_;             // 报文序号，回复与请求通用
-    uint8_t     status_code_{0};  // RPC 状态码
+    Status      status_{0};  // RPC 状态码
     uint32_t    err_msg_size_{0}; // 错误消息长度
     std::string err_msg_;         // 错误消息（状态码非 0 时设置）
     uint32_t    payload_size_{0}; // protobuf 消息大小
     std::string payload_;         // protobuf 消息
     uint32_t    check_sum_{0};    // 校验和
 
-    static constexpr uint32_t MIN_MESSAGE_SIZE = sizeof(seq_) + sizeof(status_code_)+ sizeof(err_msg_size_) + sizeof(payload_size_) + sizeof(check_sum_);
+    static constexpr uint32_t MIN_MESSAGE_SIZE = sizeof(seq_) + sizeof(status_)+ sizeof(err_msg_size_) + sizeof(payload_size_) + sizeof(check_sum_);
 public:
     [[nodiscard]]
     static auto parse_from(const void* data, uint32_t size) -> std::optional<RpcResponseMessage> {
@@ -197,7 +201,7 @@ public:
 
         RpcResponseMessage message;
         auto& seq = message.seq_;
-        auto& status_code = message.status_code_;
+        auto& status = message.status_;
         auto& err_msg_size_ = message.err_msg_size_;
         auto& err_msg = message.err_msg_;
         auto& payload_size = message.payload_size_;
@@ -213,7 +217,8 @@ public:
         ptr += sizeof(seq);
 
         // 读取状态码
-        status_code = *reinterpret_cast<const uint8_t*>(ptr);
+        auto status_code = *reinterpret_cast<const uint8_t*>(ptr);
+        status = Status{status_code};
         read_bytes += sizeof(status_code);
         ptr += sizeof(status_code);
 
@@ -269,7 +274,7 @@ private:
         using util::crc32;
         uint32_t crc = 0;
         crc = crc32(crc, &seq_, sizeof(seq_));
-        crc = crc32(crc, &status_code_, sizeof(status_code_));
+        crc = crc32(crc, &status_, sizeof(status_));
         crc = crc32(crc, &err_msg_size_, sizeof(err_msg_size_));
         crc = crc32(crc, err_msg_.data(), err_msg_.size());
         crc = crc32(crc, &payload_size_, sizeof(payload_size_));
@@ -282,7 +287,7 @@ private:
         using util::crc32;
         uint32_t crc = 0;
         crc = crc32(crc, &seq_, sizeof(seq_));
-        crc = crc32(crc, &status_code_, sizeof(status_code_));
+        crc = crc32(crc, &status_, sizeof(status_));
         crc = crc32(crc, &err_msg_size_, sizeof(err_msg_size_));
         crc = crc32(crc, err_msg_.data(), err_msg_.size());
         crc = crc32(crc, &payload_size_, sizeof(payload_size_));

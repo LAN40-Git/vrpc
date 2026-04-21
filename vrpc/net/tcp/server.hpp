@@ -1,17 +1,21 @@
 #pragma once
-#include <ranges>
-#include <kosio/net.hpp>
-#include "vrpc/common/concept.hpp"
-#include "vrpc/server/detail/context.hpp"
-#include "vrpc/server/detail/manager.hpp"
-#include "vrpc/core/detail/protocol.hpp"
+#include "vrpc/net/pb/status.hpp"
+#include "vrpc/net/tcp/detail/server_cache.hpp"
+#include "vrpc/net/tcp/detail/manager.hpp"
 
 namespace vrpc {
+using Method = std::function<kosio::async::Task<RpcResponseMessage>(const RpcRequestMessage& request)>;
 class TcpServer {
 public:
-    explicit TcpServer(uint16_t port, std::string_view ip = "0.0.0.0")
-        : port_(port)
-        , ip_(ip) {}
+    explicit TcpServer(const detail::Config& config)
+        : config_(config) {
+        auto has_addr = kosio::net::SocketAddr::parse(config_.ip, config_.port);
+        if (!has_addr) {
+            LOG_ERROR("{}", has_addr.value());
+        } else {
+            addr_ = has_addr.value();
+        }
+    }
 
     // Delete copy
     TcpServer(const TcpServer&) = delete;
@@ -22,35 +26,42 @@ public:
     auto operator=(TcpServer&&) -> TcpServer& = delete;
 
 public:
-    [[nodiscard]]
-    auto port() const noexcept -> uint16_t {
-        return port_;
-    }
-
-    [[nodiscard]]
-    auto ip() const noexcept -> std::string_view {
-        return ip_;
+    auto port() const -> uint16_t {
+        return config_.port;
     }
 
 public:
-    template <VrpcType S, VrpcType I>
-    void register_invoke(
-        S service_type,
-        I invoke_type,
-        const Method& invoke) {
-        invokes_[static_cast<Type>(service_type)][static_cast<Type>(invoke_type)] = invoke;
+    void register_method(
+        const std::string& service_name,
+        const std::string& method_name,
+        const Method& method) {
+        services_[service_name][method_name] = method;
     }
 
 public:
+    void wait() {
+        kosio::runtime::MultiThreadBuilder::options()
+            .set_num_workers(config_.thread_nums)
+            .build()
+            .block_on(process());
+    }
+
     [[REMEMBER_CO_AWAIT]]
-    auto wait() -> kosio::async::Task<void> {
-        auto has_addr = kosio::net::SocketAddr::parse(ip_, port_);
-        if (!has_addr) {
-            LOG_ERROR("{}", has_addr.error());
-            co_return;
+    auto shutdown() -> kosio::async::Task<void> {
+        is_shutdown_.store(true, std::memory_order_release);
+        co_await kosio::net::TcpStream::connect(addr_);
+
+        while (!manager_.empty()) {
+            co_await manager_.cancel_all();
+            co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
         }
-        auto addr = has_addr.value();
-        auto has_listener = kosio::net::TcpListener::bind(addr);
+        LOG_INFO("vrpc server on {} stop", addr_);
+        co_await latch_.arrive_and_wait();
+    }
+
+private:
+    auto process() -> kosio::async::Task<void> {
+        auto has_listener = kosio::net::TcpListener::bind(addr_);
         if (!has_listener) {
             LOG_ERROR("{}", has_listener.error());
             co_return;
@@ -58,7 +69,7 @@ public:
         auto listener = std::move(has_listener.value());
 
         is_shutdown_.store(false, std::memory_order_release);
-        LOG_INFO("vrpc server listening on {}", addr);
+        LOG_INFO("vrpc tcp server listening on {}", addr_);
         while (!is_shutdown_.load(std::memory_order_acquire)) {
             auto has_stream = co_await listener.accept();
             if (!has_stream) {
@@ -69,7 +80,7 @@ public:
                 LOG_ERROR("{}", ret.error());
                 continue;
             }
-            auto conn = co_await manager_.assign(peer_addr, std::move(stream));
+            auto conn = co_await manager_.assign(config_, peer_addr, std::move(stream));
             if (!conn) {
                 continue;
             }
@@ -81,59 +92,40 @@ public:
         co_await latch_.arrive_and_wait();
     }
 
-    [[REMEMBER_CO_AWAIT]]
-    auto shutdown() -> kosio::async::Task<void> {
-        auto has_addr = kosio::net::SocketAddr::parse("0.0.0.0", port_);
-        if (!has_addr) {
-            LOG_ERROR("{}", has_addr.error());
-            co_return;
-        }
-        auto addr = has_addr.value();
-
-        is_shutdown_.store(true, std::memory_order_release);
-        co_await kosio::net::TcpStream::connect(addr);
-
-        while (!manager_.empty()) {
-            co_await manager_.cancel_all();
-            co_await kosio::time::sleep(detail::WAITING_INTERVAL_MS);
-        }
-        LOG_INFO("vrpc server on {} stop", addr);
-        co_await latch_.arrive_and_wait();
-    }
-
-private:
     static auto handle_request_loop(std::shared_ptr<detail::Connection> conn) -> kosio::async::Task<void> {
         auto& stream = conn->stream_;
         auto& sender = conn->sender_;
         auto& buf = conn->req_buf_;
 
-        detail::RequestHeader req_header;
+        detail::RpcMessageHeader header;
         while (true) {
+            // 读取请求报文头
             if (auto ret = co_await stream.read_exact(
-            {reinterpret_cast<char*>(&req_header), sizeof(req_header)}); !ret) {
+            {reinterpret_cast<char*>(&header), sizeof(header)}); !ret) {
                 break;
             }
 
-            auto request_id = be64toh(req_header.request_id);
-            auto payload_size = be32toh(req_header.payload_size);
-            auto service_type = req_header.service_type;
-            auto invoke_type = req_header.invoke_type;
-
-            if (payload_size > buf.size()) {
-                LOG_ERROR("message from {} too large", conn->addr_);
+            // 校验消息大小
+            auto msg_size = be32toh(header.msg_size);
+            if (msg_size > detail::MAX_RPC_MESSAGE_SIZE) {
+                LOG_ERROR("rpc response message too large");
                 break;
             }
 
-            if (auto ret = co_await stream.read_exact({buf.data(), payload_size}); !ret) {
+            // 读取请求报文
+            if (auto ret = co_await stream.read_exact({buf.data(), msg_size}); !ret) {
                 LOG_ERROR("{}", ret.error());
                 break;
             }
 
-            detail::Request request;
-            request.request_id = request_id;
-            request.service_type = service_type;
-            request.invoke_type = invoke_type;
-            request.req_payload = std::string{buf.data(), payload_size};
+            // 解析请求报文
+            auto has_request = RpcRequestMessage::parse_from(buf.data(), msg_size);
+            if (!has_request) {
+                LOG_ERROR("rpc request message parse failed");
+                break;
+            }
+            auto request = std::move(has_request.value());
+
             if (auto ret = co_await sender.send(request); !ret) {
                 LOG_ERROR("{}", ret.error());
                 break;
@@ -147,67 +139,68 @@ private:
     auto send_response_loop(std::shared_ptr<detail::Connection> conn) -> kosio::async::Task<void> {
         auto& stream = conn->stream_;
         auto& receiver = conn->receiver_;
-        auto& buf = conn->resp_buf_;
-        auto context = std::make_shared<detail::ServerConext>(conn->addr_);
+        auto cache = std::make_shared<detail::ServerCache>(conn->addr_);
 
-        detail::ResponseHeader resp_header;
+        detail::RpcMessageHeader header;
         while (true) {
             auto has_request = co_await receiver.recv();
             if (!has_request) {
                 break;
             }
             auto request = std::move(has_request.value());
-            detail::set_context(context);
+            // 更新缓存
+            detail::set_server_cache(cache);
+            // 进行 RPC 调用，获取回复报文
+            auto response = co_await do_call(request);
+            header.msg_size = htobe32(response.bytes_size());
+            auto status_code = response.status_.code();
+            // 转为网络字节序
+            response.htobe();
 
-            // 进行 RPC 调用
-            auto result = co_await invoke(
-                request.service_type,
-                request.invoke_type,
-                request.req_payload,
-                {buf.data(), buf.capacity()});
-            resp_header.request_id = htobe64(request.request_id);
-            resp_header.payload_size = htobe32(result.payload_size());
-            resp_header.code = result.code();
-
+            // 发送回复报文
             auto ret = co_await stream.write_vectored(
-                std::span<const char>(reinterpret_cast<char*>(&resp_header), sizeof(resp_header)),
-                std::span<const char>(buf.data(), result.payload_size())
+                std::span<const char>(reinterpret_cast<char*>(&header), sizeof(header)),
+                std::span<const char>(reinterpret_cast<char*>(&response.seq_), sizeof(response.seq_)),
+                std::span<const char>(reinterpret_cast<char*>(&status_code), sizeof(status_code)),
+                std::span<const char>(reinterpret_cast<char*>(&response.err_msg_size_), sizeof(response.err_msg_size_)),
+                response.err_msg_,
+                std::span<const char>(reinterpret_cast<char*>(&response.payload_size_), sizeof(response.payload_size_)),
+                response.payload_,
+                std::span<const char>(reinterpret_cast<char*>(&response.check_sum_), sizeof(response.check_sum_))
             );
 
             if (!ret) {
-                LOG_ERROR("failed to send response to {}: {}", conn->addr_, ret.error());
+                LOG_ERROR("[{}] send rpc response message failed: {}", conn->addr_, ret.error());
             }
         }
         manager_.remove(conn->addr_.to_string());
     }
 
-
     [[REMEMBER_CO_AWAIT]]
-    auto invoke(
-        Type service_type,
-        Type invoke_type,
-        std::string_view req_payload,
-        std::span<char> resp_payload) -> kosio::async::Task<RpcResult> {
-        auto it_service = invokes_.find(service_type);
-        if (it_service == invokes_.end()) {
-            co_return make_result(StatusCode::kNotFound);
+    auto do_call(const RpcRequestMessage& request) -> kosio::async::Task<RpcResponseMessage> {
+        auto service_it = services_.find(request.service_name_);
+        if (service_it == services_.end()) {
+            auto err_msg = std::format("rpc service {} not found", request.service_name_);
+            RpcResponseMessage response{request.seq_, Status::kNotFound, err_msg, ""};
         }
-        auto it_invoke = it_service->second.find(invoke_type);
-        if (it_invoke == it_service->second.end()) {
-            co_return make_result(StatusCode::kNotFound);
+        auto method_it = service_it->second.find(request.method_name_);
+        if (method_it == service_it->second.end()) {
+            auto err_msg = std::format("rpc service {} not found", request.service_name_);
+            RpcResponseMessage response{request.seq_, Status::kNotFound, err_msg, ""};
         }
-        auto& invoke = it_invoke->second;
-        co_return co_await invoke(req_payload, resp_payload);
+        auto& method = method_it->second;
+        co_return co_await method(request);
     }
 
 private:
-    using InvokeMap = std::unordered_map<Type, std::unordered_map<Type, Method>>;
+    using MethodMap = std::unordered_map<std::string, Method>;
+    using ServiceMap = std::unordered_map<std::string, MethodMap>;
 
     kosio::sync::Latch        latch_{2};
-    uint16_t                  port_;
-    std::string               ip_;
     std::atomic<bool>         is_shutdown_{true};
-    InvokeMap                 invokes_;
+    ServiceMap                services_;
     detail::ConnectionManager manager_;
+    detail::Config            config_;
+    kosio::net::SocketAddr    addr_{};
 };
 } // namespace vrpc
