@@ -1,1 +1,1 @@
-protoc --proto_path=./ --cpp_out=pb/ ./math.proto
+protoc -I=api --cpp_out=api api/math.proto
