@@ -3,6 +3,7 @@
 #include "vrpc/net/detail/callback.hpp"
 #include "vrpc/net/detail/config.hpp"
 #include "vrpc/net/pb/detail/channel.hpp"
+#include "vrpc/common/error.hpp"
 
 namespace vrpc {
 using kosio::sync::Mutex;
@@ -11,10 +12,10 @@ using kosio::net::SocketAddr;
 using kosio::async::Task;
 class TcpClient {
     enum State {
-        Idel,
         Connecting,
         Ready,
-        TransientFailure,
+        Disconnecting,
+        Disconnected,
         Shutdown,
     };
 
@@ -63,7 +64,11 @@ public:
         std::string_view service_name,
         std::string_view method_name,
         const Req& request,
-        const std::function<Task<void>(const vrpc::Status& status, const Resp& response)>& callback) -> Task<void> {
+        const std::function<Task<void>(const Status& status, const Resp& response)>& callback) -> Task<void> {
+        std::call_once(once_flag_, [this](){
+            kosio::spawn(register_shutdown_signal());
+        });
+
         auto message = detail::RpcRequestMessage::make(service_name, method_name, request.SerializeAsString());
         auto rpc_callback = std::make_unique<detail::RpcCallbackImpl<Resp>>(callback);
         if (message.bytes_size() > detail::MAX_RPC_MESSAGE_SIZE) {
@@ -73,8 +78,14 @@ public:
 
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
-        if (status_ == Shutdown) {
+        if (state_ == Shutdown) {
             co_return;
+        }
+
+        if (state_ == Disconnected) {
+            state_ = Connecting;
+            coro_tasks_.fetch_add(1, std::memory_order_relaxed);
+            kosio::spawn(connect_loop());
         }
 
         auto seq = message.seq_;
@@ -87,7 +98,17 @@ public:
 
     [[REMEMBER_CO_AWAIT]]
     auto shutdown() -> Task<void> {
-        while (true) {
+        co_await mutex_.lock();
+        if (state_ == Shutdown) {
+            mutex_.unlock();
+            co_return;
+        }
+
+        sender_->close();
+        state_ = Shutdown;
+        mutex_.unlock();
+
+        while (coro_tasks_.load(std::memory_order_relaxed) > 0) {
             co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
             co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
         }
@@ -95,6 +116,11 @@ public:
     }
 
 private:
+    auto register_shutdown_signal() -> Task<void> {
+        co_await kosio::signal::ctrl_c();
+        co_await shutdown();
+    }
+
     auto trigger_callback(detail::RpcResponseMessage message) -> Task<void> {
         detail::RpcCallback callback;
         {
@@ -106,10 +132,12 @@ private:
         }
         callbacks_.erase(message.seq_);
         co_await callback->run(message);
+        coro_tasks_.fetch_sub(1, std::memory_order_relaxed);
     }
 
 private:
     auto send_request_loop() -> Task<void> {
+        coro_tasks_.fetch_add(1, std::memory_order_relaxed);
         detail::RpcMessageHeader header{};
         while (true) {
             auto has_request = co_await receiver_->recv();
@@ -119,11 +147,6 @@ private:
             auto request = std::move(has_request.value());
             request.htobe(); // 转为网络字节序
             header.msg_size = htobe32(request.bytes_size());
-
-            if (auto status = co_await connect();!status.ok()) {
-                kosio::spawn(trigger_callback(detail::RpcResponseMessage::make(be64toh(request.seq_), status)));
-                continue;
-            }
 
             auto ret = co_await stream_.write_vectored(
                 std::span<const char>(reinterpret_cast<char*>(&header), sizeof(header)),
@@ -144,9 +167,22 @@ private:
                     Status::kUnavailable, "send rpc request message failed")));
             }
         }
+        co_await mutex_.lock();
+        switch (state_) {
+            case Shutdown:
+                break;
+            case Disconnecting:
+                state_ = Disconnected;
+                break;
+            default:
+                break;
+        }
+        mutex_.unlock();
+        coro_tasks_.fetch_sub(1, std::memory_order_relaxed);
     }
 
     auto handle_response_loop() -> Task<void> {
+        coro_tasks_.fetch_add(1, std::memory_order_relaxed);
         std::vector<char> buf(detail::MAX_RPC_MESSAGE_SIZE);
         detail::RpcMessageHeader header;
         while (true) {
@@ -176,82 +212,86 @@ private:
                 break;
             }
 
+            coro_tasks_.fetch_add(1, std::memory_order_relaxed);
             // 启动回调协程
             kosio::spawn(trigger_callback(std::move(message.value())));
         }
+        co_await mutex_.lock();
+        switch (state_) {
+            case Shutdown:
+                break;
+            case Disconnecting:
+                state_ = Disconnected;
+                break;
+            default:
+                break;
+        }
+        mutex_.unlock();
+        coro_tasks_.fetch_sub(1, std::memory_order_relaxed);
     }
 
 private:
     [[REMEMBER_CO_AWAIT]]
-    auto connect() -> Task<Status> {
-        std::size_t retry_times{1};
-        std::size_t block_off{static_cast<std::size_t>(detail::MIN_CONNECT_TIMEOUT)};
-        co_await mutex_.lock();
-        if (state_ == Shutdown) {
+    auto connect_loop() -> Task<void> {
+        auto retry_times{1};
+        auto backoff{detail::BASE_DELAY};
+        while (true) {
+            co_await mutex_.lock();
+            if (state_ == Shutdown) {
+                mutex_.unlock();
+                break;
+            }
             mutex_.unlock();
-            co_return Status{Status::kCancelled, "connection closed"};
-        }
 
-        if (state_ != Idel) {
-            mutex_.unlock();
-            co_return Status{Status::kOk};
-        }
-
-        state_ = Connecting;
-        mutex_.unlock();
-        while (retry_times < config_.max_connect_retry_times) {
-            // TODO：存储多个服务器地址并尝试连接
-            auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(block_off);
+            auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(std::max(backoff, config_.min_connect_timeout));
             if (!has_stream) {
-                co_await mutex_.lock();
-                if (state_ == Shutdown) {
-                    mutex_.unlock();
-                    co_return Status{Status::kCancelled, "connection closed"};
-                }
-                state_ = TransientFailure;
-                mutex_.unlock();
-
-                block_off = get_block_off(retry_times++);
-                co_await mutex_.lock();
-                if (state_ == Shutdown) {
-                    mutex_.unlock();
-                    co_return Status{Status::kCancelled, "connection closed"};
-                }
-                state_ = Idel;
-                mutex_.unlock();
+                LOG_ERROR("{}", has_stream.error());
+                backoff = get_block_off(retry_times++);
+                LOG_INFO("backoff for {}", backoff);
+                co_await kosio::time::sleep(backoff);
                 continue;
             }
             auto stream = std::move(has_stream.value());
 
-            // set tcp nodelay
             if (auto ret = stream.set_nodelay(true); !ret) {
                 LOG_ERROR("{}", ret.error());
+                backoff = get_block_off(retry_times++);
+                LOG_INFO("backoff for {}", backoff);
+                co_await kosio::time::sleep(backoff);
                 continue;
             }
 
             co_await mutex_.lock();
-            // TODO：添加健康检查后再设置为 Ready
-            if (state_ != Shutdown) {
-                state_ = Ready;
+            if (state_ == Shutdown) {
+                mutex_.unlock();
+                break;
             }
+            state_ = Ready;
             stream_ = std::move(stream);
+            kosio::spawn(send_request_loop());
+            kosio::spawn(handle_response_loop());
             mutex_.unlock();
-            co_return Status{Status::kOk};
+            break;
         }
-        co_return Status{Status::kUnavailable, "connect failed"};
+        coro_tasks_.fetch_sub(1, std::memory_order_relaxed);
     }
 
     [[nodiscard]]
     auto get_block_off(std::size_t retry_times) const -> std::size_t {
         return std::min(
-            config_.max_connect_timeout,
-            static_cast<std::size_t>(1.6 * detail::MIN_CONNECT_TIMEOUT * static_cast<double>(retry_times)));
+            config_.max_backoff,
+            static_cast<std::size_t>(
+                detail::MULTIPLIER *
+                static_cast<double>(detail::BASE_DELAY) *
+                static_cast<double>(retry_times)));
     }
 
 private:
+    std::once_flag                once_flag_;
     detail::Config                config_;
+    std::atomic<int>              coro_tasks_{0};
     SocketAddr                    peer_addr_{};
-    State                         state_{Idel};
+    State                         state_{Disconnected};
     TcpStream                     stream_;
     Mutex                         mutex_;
     detail::RpcRequestSenderPtr   sender_{nullptr};

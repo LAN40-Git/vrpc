@@ -22,7 +22,6 @@ auto main() -> int {
     vrpc::TcpServerBuilder::options()
         .set_ip("0.0.0.0")
         .set_port(8080)
-        .set_channel_capacity(256)
         .set_thread_nums(4)
         .build()
         .register_method<MathAddRequest, MathAddResponse>("math", "add", add)

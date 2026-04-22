@@ -23,6 +23,17 @@ public:
         return *this;
     }
 
+    [[nodiscard]]
+    auto set_min_connect_timeout(uint16_t port) -> EndPointBuilder& {
+        config_.min_connect_timeout = port;
+        return *this;
+    }
+
+    [[nodiscard]]
+    auto set_max_backoff(uint16_t port) -> EndPointBuilder& {
+        config_.max_backoff = port;
+        return *this;
+    }
 
     [[nodiscard]]
     auto set_thread_nums(std::size_t thread_nums) -> EndPointBuilder& {
