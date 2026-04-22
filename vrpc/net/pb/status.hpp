@@ -1,10 +1,11 @@
 #pragma once
 #include <string_view>
+#include <utility>
 
 namespace vrpc {
 class Status {
 public:
-    enum Code : unsigned char {
+    enum Code : uint8_t {
         kOk = 0,
         kAborted,
         kAlreadyExists,
@@ -16,15 +17,18 @@ public:
         kUnavailable,
         kInternal,
         kResourceExhausted,
+        kParseFailed,
+        kSerializeFailed,
         kUnknown
     };
 
 public:
-    explicit Status(unsigned char code = kOk)
-        : code_(code) {}
+    explicit Status(uint8_t code = kOk, std::string_view err_msg = "")
+        : code_(code)
+        , err_msg_(err_msg) {}
 
     explicit Status(Code code)
-        : code_(static_cast<unsigned char>(code)) {}
+        : code_(static_cast<uint8_t>(code)) {}
 
 public:
     [[nodiscard]]
@@ -32,50 +36,19 @@ public:
         return code_ == kOk;
     }
 
-    [[nodiscard]]
-    auto is_cancelled() const -> bool {
-        return code_ == kCancelled;
-    }
-
 public:
     [[nodiscard]]
-    auto code() const noexcept -> unsigned char {
+    auto code() const noexcept -> uint8_t {
         return code_;
     }
 
     [[nodiscard]]
     auto message() const noexcept -> std::string_view {
-        switch (code_) {
-        case kOk:
-            return "ok";
-        case kAborted:
-            return "aborted";
-        case kAlreadyExists:
-            return "already exists";
-        case kCancelled:
-            return "cancelled";
-        case kNotFound:
-            return "not found";
-        case kInvalidArgument:
-            return "invalid argument";
-        case kDeadlineExceeded:
-            return "deadline exceeded";
-        case kPermissionDenied:
-            return "permission denied";
-        case kUnavailable:
-            return "unavailable";
-        case kInternal:
-            return "internal error";
-        case kResourceExhausted:
-            return "resource exhausted";
-        case kUnknown:
-            return "unknown error";
-        default:
-            return "invalid status code";
-        }
+        return err_msg_;
     }
 
 private:
-    unsigned char code_;
+    uint8_t     code_;
+    std::string err_msg_;
 };
 } // namespace vrpc

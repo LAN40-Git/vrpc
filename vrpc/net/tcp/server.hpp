@@ -148,20 +148,16 @@ private:
                 break;
             }
             auto request = std::move(has_request.value());
-            // 更新缓存
-            detail::set_server_cache(cache);
-            // 进行 RPC 调用，获取回复报文
-            auto response = co_await do_call(request);
+            detail::set_server_cache(cache); // 更新缓存
+            auto response = co_await call_method(request); // 进行 RPC 调用，获取回复报文 TODO: 启动协程？
             header.msg_size = htobe32(response.bytes_size());
-            auto status_code = response.status_.code();
-            // 转为网络字节序
-            response.htobe();
+            response.htobe(); // 转为网络字节序
 
             // 发送回复报文
             auto ret = co_await stream.write_vectored(
                 std::span<const char>(reinterpret_cast<char*>(&header), sizeof(header)),
                 std::span<const char>(reinterpret_cast<char*>(&response.seq_), sizeof(response.seq_)),
-                std::span<const char>(reinterpret_cast<char*>(&status_code), sizeof(status_code)),
+                std::span<const char>(reinterpret_cast<char*>(&response.status_code_), sizeof(response.status_code_)),
                 std::span<const char>(reinterpret_cast<char*>(&response.err_msg_size_), sizeof(response.err_msg_size_)),
                 response.err_msg_,
                 std::span<const char>(reinterpret_cast<char*>(&response.payload_size_), sizeof(response.payload_size_)),
@@ -177,16 +173,22 @@ private:
     }
 
     [[REMEMBER_CO_AWAIT]]
-    auto do_call(const RpcRequestMessage& request) -> kosio::async::Task<RpcResponseMessage> {
+    auto call_method(const RpcRequestMessage& request) -> kosio::async::Task<RpcResponseMessage> {
         auto service_it = services_.find(request.service_name_);
         if (service_it == services_.end()) {
-            auto err_msg = std::format("rpc service {} not found", request.service_name_);
-            RpcResponseMessage response{request.seq_, Status::kNotFound, err_msg, ""};
+            co_return RpcResponseMessage::make(
+                request.seq_,
+                Status::kNotFound,
+                std::format("rpc service {} not found", request.service_name_),
+                "");
         }
         auto method_it = service_it->second.find(request.method_name_);
         if (method_it == service_it->second.end()) {
-            auto err_msg = std::format("rpc service {} not found", request.service_name_);
-            RpcResponseMessage response{request.seq_, Status::kNotFound, err_msg, ""};
+            co_return RpcResponseMessage::make(
+                request.seq_, Status::kNotFound,
+                std::format("rpc method {} not found",
+                    request.method_name_),
+                    "");
         }
         auto& method = method_it->second;
         co_return co_await method(request);
