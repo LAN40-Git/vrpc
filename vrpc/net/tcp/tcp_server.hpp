@@ -1,14 +1,15 @@
 #pragma once
-#include "vrpc/net/pb/status.hpp"
+#include <utility>
+
+#include "vrpc/net/detail/method.hpp"
 #include "vrpc/net/tcp/detail/server_cache.hpp"
 #include "vrpc/net/tcp/detail/manager.hpp"
 
 namespace vrpc {
-using Method = std::function<kosio::async::Task<RpcResponseMessage>(const RpcRequestMessage& request)>;
 class TcpServer {
 public:
-    explicit TcpServer(const detail::Config& config)
-        : config_(config) {
+    explicit TcpServer(detail::Config config)
+        : config_(std::move(config)) {
         auto has_addr = kosio::net::SocketAddr::parse(config_.ip, config_.port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.value());
@@ -31,11 +32,15 @@ public:
     }
 
 public:
-    void register_method(
+    template <typename Req, typename Resp>
+        requires std::is_base_of_v<google::protobuf::Message, Req> &&
+                 std::is_base_of_v<google::protobuf::Message, Resp>
+    auto register_method(
         const std::string& service_name,
         const std::string& method_name,
-        const Method& method) {
-        services_[service_name][method_name] = method;
+        const std::function<kosio::async::Task<Resp>(const Req& request)>& method) -> TcpServer& {
+        services_[service_name][method_name] = std::make_unique<detail::RpcMethodImpl<Req, Resp>>(method);
+        return *this;
     }
 
 public:
@@ -43,7 +48,7 @@ public:
         kosio::runtime::MultiThreadBuilder::options()
             .set_num_workers(config_.thread_nums)
             .build()
-            .block_on(process());
+            .block_on(accept_loop());
     }
 
     [[REMEMBER_CO_AWAIT]]
@@ -60,7 +65,7 @@ public:
     }
 
 private:
-    auto process() -> kosio::async::Task<void> {
+    auto accept_loop() -> kosio::async::Task<void> {
         auto has_listener = kosio::net::TcpListener::bind(addr_);
         if (!has_listener) {
             LOG_ERROR("{}", has_listener.error());
@@ -73,6 +78,7 @@ private:
         while (!is_shutdown_.load(std::memory_order_acquire)) {
             auto has_stream = co_await listener.accept();
             if (!has_stream) {
+                LOG_ERROR("{}", has_stream.error());
                 continue;
             }
             auto& [stream, peer_addr] = has_stream.value();
@@ -88,6 +94,7 @@ private:
             kosio::spawn(handle_request_loop(conn));
             kosio::spawn(send_response_loop(conn));
         }
+        LOG_INFO("vrpc tcp server stop listening on {}", addr_);
         co_await listener.close();
         co_await latch_.arrive_and_wait();
     }
@@ -97,7 +104,7 @@ private:
         auto& sender = conn->sender_;
         auto& buf = conn->req_buf_;
 
-        detail::RpcMessageHeader header;
+        detail::RpcMessageHeader header{};
         while (true) {
             // 读取请求报文头
             if (auto ret = co_await stream.read_exact(
@@ -119,7 +126,7 @@ private:
             }
 
             // 解析请求报文
-            auto has_request = RpcRequestMessage::parse_from(buf.data(), msg_size);
+            auto has_request = detail::RpcRequestMessage::parse_from(buf.data(), msg_size);
             if (!has_request) {
                 LOG_ERROR("rpc request message parse failed");
                 break;
@@ -173,10 +180,10 @@ private:
     }
 
     [[REMEMBER_CO_AWAIT]]
-    auto call_method(const RpcRequestMessage& request) -> kosio::async::Task<RpcResponseMessage> {
+    auto call_method(const detail::RpcRequestMessage& request) -> kosio::async::Task<detail::RpcResponseMessage> {
         auto service_it = services_.find(request.service_name_);
         if (service_it == services_.end()) {
-            co_return RpcResponseMessage::make(
+            co_return detail::RpcResponseMessage::make(
                 request.seq_,
                 Status::kNotFound,
                 std::format("rpc service {} not found", request.service_name_),
@@ -184,23 +191,20 @@ private:
         }
         auto method_it = service_it->second.find(request.method_name_);
         if (method_it == service_it->second.end()) {
-            co_return RpcResponseMessage::make(
+            co_return detail::RpcResponseMessage::make(
                 request.seq_, Status::kNotFound,
                 std::format("rpc method {} not found",
                     request.method_name_),
                     "");
         }
         auto& method = method_it->second;
-        co_return co_await method(request);
+        co_return co_await method->run(request);
     }
 
 private:
-    using MethodMap = std::unordered_map<std::string, Method>;
-    using ServiceMap = std::unordered_map<std::string, MethodMap>;
-
     kosio::sync::Latch        latch_{2};
     std::atomic<bool>         is_shutdown_{true};
-    ServiceMap                services_;
+    detail::RpcServiceMap     services_;
     detail::ConnectionManager manager_;
     detail::Config            config_;
     kosio::net::SocketAddr    addr_{};

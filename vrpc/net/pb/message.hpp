@@ -1,17 +1,15 @@
 #pragma once
 #include <string>
 #include <optional>
-#include "vrpc/net/pb/status.hpp"
+#include <google/protobuf/message.h>
 #include "vrpc/common/util/crc32.hpp"
 #include "vrpc/common/util/sequence.hpp"
 
-namespace vrpc {
-namespace detail {
+namespace vrpc::detail {
 constexpr uint32_t MAX_RPC_MESSAGE_SIZE = 4 * 1024 * 1024;
 struct RpcMessageHeader {
-    uint32_t msg_size; // 报文总大小
+    uint32_t msg_size{}; // 报文总大小
 };
-} // namespace detail
 
 /**
  * RPC 请求报文
@@ -179,16 +177,6 @@ class RpcResponseMessage {
 private:
     RpcResponseMessage() = default;
 
-    explicit RpcResponseMessage(uint64_t seq, uint8_t status_code, std::string_view err_msg, std::string&& payload)
-        : seq_(seq)
-        , status_code_(status_code)
-        , err_msg_size_(err_msg.size())
-        , err_msg_(err_msg)
-        , payload_size_(payload.size())
-        , payload_(std::move(payload)) {
-        encode_check_sum();
-    }
-
     explicit RpcResponseMessage(uint64_t seq, uint8_t status_code, std::string&& err_msg, std::string&& payload)
         : seq_(seq)
         , status_code_(status_code)
@@ -220,11 +208,6 @@ public:
     }
 
 public:
-    [[nodiscard]]
-    static auto make(uint64_t seq, uint8_t status_code, std::string_view err_msg, std::string&& payload) -> RpcResponseMessage {
-        return RpcResponseMessage{seq, status_code, err_msg, std::move(payload)};
-    }
-
     [[nodiscard]]
     static auto make(uint64_t seq, uint8_t status_code, std::string&& err_msg, std::string&& payload) -> RpcResponseMessage {
         return RpcResponseMessage{seq, status_code, std::move(err_msg), std::move(payload)};
@@ -314,4 +297,4 @@ public:
 
     static constexpr uint32_t MIN_MESSAGE_SIZE = sizeof(seq_) + sizeof(status_code_)+ sizeof(err_msg_size_) + sizeof(payload_size_) + sizeof(check_sum_);
 };
-} // namespace vrpc
+} // namespace vrpc::detail

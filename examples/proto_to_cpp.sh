@@ -1,1 +1,0 @@
-protoc -I=api --cpp_out=api api/math.proto

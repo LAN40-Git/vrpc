@@ -10,10 +10,7 @@ struct Config {
     std::string ip{"127.0.0.1"};
 
     // port
-    uint16_t port{19999};
-
-    // 最大连接超时-ms
-    std::size_t max_connect_timeout{60 * 1000};
+    uint16_t port{8080};
 
     // 消息通道大小
     std::size_t channel_capacity{256};

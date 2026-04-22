@@ -17,18 +17,13 @@ public:
         kUnavailable,
         kInternal,
         kResourceExhausted,
-        kParseFailed,
-        kSerializeFailed,
         kUnknown
     };
 
 public:
-    explicit Status(uint8_t code = kOk, std::string_view err_msg = "")
+    explicit Status(uint8_t code, std::string_view err_msg = "")
         : code_(code)
         , err_msg_(err_msg) {}
-
-    explicit Status(Code code)
-        : code_(static_cast<uint8_t>(code)) {}
 
 public:
     [[nodiscard]]

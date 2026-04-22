@@ -1,0 +1,1 @@
+protoc -I=../api/mathpb --cpp_out=api/mathpb api/mathpb/math.proto

@@ -1,10 +1,10 @@
 #pragma once
 #include "vrpc/net/detail/config.hpp"
-#include "vrpc/net/tcp/server.hpp"
+#include "vrpc/net/tcp/tcp_server.hpp"
 
 namespace vrpc {
 namespace detail {
-    template <typename Server>
+template <typename Server>
 class ServerBuilder {
 private:
     ServerBuilder() = default;
@@ -19,12 +19,6 @@ public:
     [[nodiscard]]
     auto set_port(uint16_t port) -> ServerBuilder& {
         config_.port = port;
-        return *this;
-    }
-
-    [[nodiscard]]
-    auto set_max_connect_timeout(std::size_t max_connect_timeout) -> ServerBuilder& {
-        config_.max_connect_timeout = max_connect_timeout;
         return *this;
     }
 
@@ -61,7 +55,5 @@ private:
     Config config_;
 };
 } // namespace detail
-
 class TcpServerBuilder : public detail::ServerBuilder<TcpServer> {};
-
 } // namespace vrpc
