@@ -187,6 +187,16 @@ private:
         encode_check_sum();
     }
 
+    explicit RpcResponseMessage(uint64_t seq, const Status& status, std::string&& payload)
+        : seq_(seq)
+        , status_code_(status.code())
+        , err_msg_size_(status.message().size())
+        , err_msg_(std::string{status.message()})
+        , payload_size_(payload.size())
+        , payload_(std::move(payload)) {
+        encode_check_sum();
+    }
+
 public:
     RpcResponseMessage(const RpcResponseMessage&) = default;
     auto operator=(const RpcResponseMessage&) -> RpcResponseMessage& = default;
@@ -209,8 +219,13 @@ public:
 
 public:
     [[nodiscard]]
-    static auto make(uint64_t seq, uint8_t status_code, std::string&& err_msg, std::string&& payload) -> RpcResponseMessage {
+    static auto make(uint64_t seq, uint8_t status_code, std::string&& err_msg = "", std::string&& payload = "") -> RpcResponseMessage {
         return RpcResponseMessage{seq, status_code, std::move(err_msg), std::move(payload)};
+    }
+
+    [[nodiscard]]
+    static auto make(uint64_t seq, const Status& status, std::string&& payload = "") -> RpcResponseMessage {
+        return RpcResponseMessage{seq, status, std::move(payload)};
     }
 
     [[nodiscard]]

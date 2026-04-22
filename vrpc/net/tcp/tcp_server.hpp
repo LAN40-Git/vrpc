@@ -69,10 +69,6 @@ public:
 
 private:
     auto accept_loop() -> kosio::async::Task<void> {
-        if (is_shutdown_.load(std::memory_order_acquire)) {
-            co_return;
-        }
-        register_shutdown_signal();
         auto has_listener = kosio::net::TcpListener::bind(addr_);
         if (!has_listener) {
             LOG_ERROR("{}", has_listener.error());
@@ -80,6 +76,7 @@ private:
         }
         auto listener = std::move(has_listener.value());
         is_accepting_.store(true, std::memory_order_release);
+        kosio::spawn(wait_for_ctrl_c());
         LOG_INFO("vrpc tcp server listening on {}", addr_);
         while (true) {
             auto has_stream = co_await listener.accept();
@@ -95,7 +92,7 @@ private:
                 LOG_ERROR("{}", ret.error());
                 continue;
             }
-            auto conn = co_await manager_.assign(config_, peer_addr, std::move(stream));
+            auto conn = co_await manager_.assign(peer_addr, std::move(stream));
             if (!conn) {
                 continue;
             }

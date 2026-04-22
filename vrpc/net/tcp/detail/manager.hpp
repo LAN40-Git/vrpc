@@ -36,9 +36,9 @@ class ConnectionManager {
     using ConnectionMap = tbb::concurrent_hash_map<std::string, std::shared_ptr<Connection>>;
 public:
     [[REMEMBER_CO_AWAIT]]
-    auto assign(const Config& config, const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<std::shared_ptr<Connection>> {
+    auto assign(const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<std::shared_ptr<Connection>> {
         auto [sender, receiver] =
-            RpcRequestChannel::make(config.channel_capacity);
+            RpcRequestChannel::make(detail::CHANNEL_CAPACITY);
         auto new_conn = std::make_shared<Connection>(addr, std::move(stream), std::move(sender), std::move(receiver));
         auto addr_str = addr.to_string();
         {
