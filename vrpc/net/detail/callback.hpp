@@ -8,7 +8,7 @@ namespace vrpc::detail {
 class RpcCallbackBase {
 public:
     virtual ~RpcCallbackBase() = default;
-    virtual auto run(const RpcResponseMessage& message) -> kosio::async::Task<void> = 0;
+    virtual auto run(RpcResponseMessage& message) -> kosio::async::Task<void> = 0;
 };
 
 template <typename Resp>
@@ -20,9 +20,9 @@ public:
 
 public:
     [[REMEMBER_CO_AWAIT]]
-    auto run(const RpcResponseMessage& message) -> kosio::async::Task<void>  override {
+    auto run(RpcResponseMessage& message) -> kosio::async::Task<void>  override {
         Resp response;
-        auto status = Status{message.status_code_};
+        auto status = Status{message.status_code_, std::move(message.err_msg_)};
         if (status.ok()) {
             if (!response.ParseFromString(message.payload_)) {
                 status = Status{Status::kInternal, "parse rpc response message failed"};

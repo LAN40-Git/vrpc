@@ -8,6 +8,7 @@
 namespace vrpc {
 class TcpServer {
 public:
+public:
     explicit TcpServer(detail::Config config)
         : config_(std::move(config)) {
         auto has_addr = kosio::net::SocketAddr::parse(config_.ip, config_.port);
@@ -54,32 +55,40 @@ public:
     [[REMEMBER_CO_AWAIT]]
     auto shutdown() -> kosio::async::Task<void> {
         is_shutdown_.store(true, std::memory_order_release);
-        co_await kosio::net::TcpStream::connect(addr_);
+        while (is_accepting_.load(std::memory_order_acquire)) {
+            co_await kosio::net::TcpStream::connect(addr_);
+            co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
+        }
 
         while (!manager_.empty()) {
             co_await manager_.cancel_all();
             co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
         }
         LOG_INFO("vrpc server on {} stop", addr_);
-        co_await latch_.arrive_and_wait();
     }
 
 private:
     auto accept_loop() -> kosio::async::Task<void> {
+        if (is_shutdown_.load(std::memory_order_acquire)) {
+            co_return;
+        }
+        register_shutdown_signal();
         auto has_listener = kosio::net::TcpListener::bind(addr_);
         if (!has_listener) {
             LOG_ERROR("{}", has_listener.error());
             co_return;
         }
         auto listener = std::move(has_listener.value());
-
-        is_shutdown_.store(false, std::memory_order_release);
+        is_accepting_.store(true, std::memory_order_release);
         LOG_INFO("vrpc tcp server listening on {}", addr_);
-        while (!is_shutdown_.load(std::memory_order_acquire)) {
+        while (true) {
             auto has_stream = co_await listener.accept();
             if (!has_stream) {
                 LOG_ERROR("{}", has_stream.error());
                 continue;
+            }
+            if (is_shutdown_.load(std::memory_order_acquire)) {
+                break;
             }
             auto& [stream, peer_addr] = has_stream.value();
             if (auto ret = stream.set_nodelay(true); !ret) {
@@ -96,7 +105,7 @@ private:
         }
         LOG_INFO("vrpc tcp server stop listening on {}", addr_);
         co_await listener.close();
-        co_await latch_.arrive_and_wait();
+        is_accepting_.store(false, std::memory_order_release);
     }
 
     static auto handle_request_loop(std::shared_ptr<detail::Connection> conn) -> kosio::async::Task<void> {
@@ -180,19 +189,19 @@ private:
     }
 
     [[REMEMBER_CO_AWAIT]]
-    auto call_method(const detail::RpcRequestMessage& request) -> kosio::async::Task<detail::RpcResponseMessage> {
+    auto call_method(detail::RpcRequestMessage& request) -> kosio::async::Task<detail::RpcResponseMessage> {
         auto service_it = services_.find(request.service_name_);
         if (service_it == services_.end()) {
             co_return detail::RpcResponseMessage::make(
                 request.seq_,
-                Status::kNotFound,
+                vrpc::Status::kNotFound,
                 std::format("rpc service {} not found", request.service_name_),
                 "");
         }
         auto method_it = service_it->second.find(request.method_name_);
         if (method_it == service_it->second.end()) {
             co_return detail::RpcResponseMessage::make(
-                request.seq_, Status::kNotFound,
+                request.seq_, vrpc::Status::kNotFound,
                 std::format("rpc method {} not found",
                     request.method_name_),
                     "");
@@ -201,9 +210,14 @@ private:
         co_return co_await method->run(request);
     }
 
+    auto wait_for_ctrl_c() -> kosio::async::Task<void> {
+        co_await kosio::signal::ctrl_c();
+        co_await shutdown();
+    }
+
 private:
-    kosio::sync::Latch        latch_{2};
-    std::atomic<bool>         is_shutdown_{true};
+    std::atomic<bool>         is_accepting_{false};
+    std::atomic<bool>         is_shutdown_{false};
     detail::RpcServiceMap     services_;
     detail::ConnectionManager manager_;
     detail::Config            config_;

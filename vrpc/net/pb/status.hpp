@@ -21,9 +21,9 @@ public:
     };
 
 public:
-    explicit Status(uint8_t code, std::string_view err_msg = "")
+    explicit Status(uint8_t code, std::string&& err_msg = "")
         : code_(code)
-        , err_msg_(err_msg) {}
+        , err_msg_(std::move(err_msg)) {}
 
 public:
     [[nodiscard]]

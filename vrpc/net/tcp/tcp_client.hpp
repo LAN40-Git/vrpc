@@ -44,6 +44,7 @@ public:
         : ip_(ip)
         , port_(port)
         , stream_(kosio::net::detail::Socket{-1}) {
+
         auto [sender, receiver] =
                             detail::RpcRequestChannel::make(256);
         sender_ = std::make_shared<detail::RpcRequestChannel::Sender>(std::move(sender));
@@ -73,87 +74,17 @@ public:
     template <typename Req, typename Resp>
         requires std::is_base_of_v<google::protobuf::Message, Req> &&
                  std::is_base_of_v<google::protobuf::Message, Resp>
-    void call_method(
+    [[REMEMBER_CO_AWAIT]]
+    auto call_method(
         std::string_view service_name,
         std::string_view method_name,
         const Req& request,
-        const std::function<kosio::async::Task<void>(const vrpc::Status& status, const Resp& response)>& callback) {
-        kosio::spawn(register_callback(
-            detail::RpcRequestMessage::make(service_name, method_name, request.SerializeAsString()),
-            std::make_unique<detail::RpcCallbackImpl<Resp>>(callback)));
-    }
-
-    [[REMEMBER_CO_AWAIT]]
-    auto shutdown() -> kosio::async::Task<void> {
-        {
-            co_await mutex_.lock();
-            std::lock_guard lock{mutex_, std::adopt_lock};
-            status_ = kShuttingDown;
-            sender_->close();
-        }
-
-        while (true) {
-            LOG_INFO("is waiting");
-            co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
-            co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
-            co_await mutex_.lock();
-            std::lock_guard lock{mutex_, std::adopt_lock};
-            if (is_shutdown() || is_disconnected()) {
-                break;
-            }
-        }
-        co_await latch_.wait();
-    }
-
-private:
-    auto connect() -> kosio::async::Task<void> {
-        // 重试次数
-        std::size_t retry_times{1};
-        while (true) {
-            auto has_addr = kosio::net::SocketAddr::parse(ip_, port_);
-            if (!has_addr) {
-                LOG_ERROR("{}", has_addr.error());
-                break;
-            }
-            auto peer_addr = has_addr.value();
-
-            auto has_stream = co_await kosio::net::TcpStream::connect(peer_addr).set_timeout(max_connect_timeout_);
-            if (!has_stream) {
-                LOG_ERROR("{}", has_stream.error());
-                co_await kosio::time::sleep(do_avoid(retry_times++));
-                continue;
-            }
-
-            if (auto ret = has_stream.value().set_nodelay(true); !ret) {
-                LOG_VERBOSE("{}", ret.error());
-                continue;
-            }
-
-            LOG_INFO("vrpc tcp client connect to {}", peer_addr);
-            co_await mutex_.lock();
-            std::lock_guard lock{mutex_, std::adopt_lock};
-            // 连接建立成功时，可能客户端正在或已经关闭，此时直接返回
-            if (is_shutting_down() || is_shutdown()) {
-                co_return;
-            }
-            status_ = kConnected;
-            stream_ = std::move(has_stream.value());
-            kosio::spawn(handle_response_loop());
-            kosio::spawn(send_request_loop());
-            co_return;
-        }
-    }
-
-    [[nodiscard]]
-    auto do_avoid(std::size_t retry_times) const -> std::size_t {
-        return std::min(max_connect_timeout_,
-            static_cast<std::size_t>(retry_times * 2 * 1000));
-    }
-
-    auto register_callback(detail::RpcRequestMessage message, detail::RpcCallback callback) -> kosio::async::Task<void> {
+        const std::function<kosio::async::Task<void>(const vrpc::Status& status, const Resp& response)>& callback) -> kosio::async::Task<void> {
+        auto message = detail::RpcRequestMessage::make(service_name, method_name, request.SerializeAsString());
+        auto rpc_callback = std::make_unique<detail::RpcCallbackImpl<Resp>>(callback);
         // 校验大小
         if (message.bytes_size() > detail::MAX_RPC_MESSAGE_SIZE) {
-            LOG_INFO("{}", message.bytes_size());
+            LOG_ERROR("vrpc request message too large");
             co_return;
         }
 
@@ -178,7 +109,76 @@ private:
             LOG_ERROR("{}", ret.error());
             co_return;
         }
-        callbacks_.emplace(seq, std::move(callback));
+        callbacks_.emplace(seq, std::move(rpc_callback));
+    }
+
+    [[REMEMBER_CO_AWAIT]]
+    auto shutdown() -> kosio::async::Task<void> {
+        {
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            status_ = kShuttingDown;
+            sender_->close();
+        }
+
+        while (true) {
+            co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
+            co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            if (is_shutdown()) {
+                break;
+            }
+        }
+        LOG_INFO("vrpc tcp client closed");
+    }
+
+private:
+    auto connect() -> kosio::async::Task<void> {
+        // 重试次数
+        std::size_t retry_times{1};
+        while (true) {
+            auto has_addr = kosio::net::SocketAddr::parse(ip_, port_);
+            if (!has_addr) {
+                LOG_ERROR("{}", has_addr.error());
+                break;
+            }
+            auto peer_addr = has_addr.value();
+
+            auto has_stream = co_await kosio::net::TcpStream::connect(peer_addr).set_timeout(max_connect_timeout_);
+            co_await mutex_.lock();
+            std::lock_guard lock{mutex_, std::adopt_lock};
+            // 判断客户端状态
+            if (is_shutting_down()) {
+                // 连接协程存在的时候，handle_response_loop 协程是不可能存在的
+                // 此时直接标记为关闭即可
+                status_ = kShutdown;
+                co_return;
+            }
+
+            if (!has_stream) {
+                LOG_ERROR("{}", has_stream.error());
+                co_await kosio::time::sleep(do_avoid(retry_times++));
+                continue;
+            }
+
+            if (auto ret = has_stream.value().set_nodelay(true); !ret) {
+                LOG_VERBOSE("{}", ret.error());
+                continue;
+            }
+
+            status_ = kConnected;
+            LOG_INFO("vrpc tcp client connect to {}", peer_addr);
+            stream_ = std::move(has_stream.value());
+            kosio::spawn(handle_response_loop());
+            co_return;
+        }
+    }
+
+    [[nodiscard]]
+    auto do_avoid(std::size_t retry_times) const -> std::size_t {
+        return std::min(max_connect_timeout_,
+            static_cast<std::size_t>(retry_times * 2 * 1000));
     }
 
     auto trigger_callback(detail::RpcResponseMessage message) -> kosio::async::Task<void> {
@@ -208,7 +208,7 @@ private:
             // 校验消息大小
             auto msg_size = be32toh(header.msg_size);
             if (msg_size > detail::MAX_RPC_MESSAGE_SIZE) {
-                LOG_ERROR("rpc response message too large");
+                LOG_ERROR("vrpc response message too large");
                 break;
             }
 
@@ -221,7 +221,7 @@ private:
             // 解析回复报文
             auto message = detail::RpcResponseMessage::parse_from(buf.data(), msg_size);
             if (!message) {
-                LOG_ERROR("rpc response message parse failed");
+                LOG_ERROR("vrpc response message parse failed");
                 break;
             }
 
@@ -232,7 +232,9 @@ private:
 
         co_await mutex_.lock();
         std::lock_guard lock{mutex_, std::adopt_lock};
+        // 若客户端正在关闭
         if (is_shutting_down()) {
+            // 客户端正在关闭的时候是不可能有连接协程的，直接标记为关闭
             status_ = kShutdown;
         }
         status_ = kDisconnected;
@@ -269,10 +271,10 @@ private:
                     "")));
             }
         }
-        latch_.count_down();
     }
 
 private:
+    std::atomic<std::size_t>      total_coros_{0};
     std::size_t                   max_connect_timeout_{8000}; // ms
     std::string                   ip_;
     uint16_t                      port_;
@@ -280,7 +282,6 @@ private:
     detail::RpcRequestSenderPtr   sender_{nullptr};
     detail::RpcRequestReceiverPtr receiver_{nullptr};
     kosio::sync::Mutex            mutex_;
-    kosio::sync::Latch            latch_{1};
     Status                        status_{kDisconnected};
     detail::RpcCallbackMap        callbacks_;
 };

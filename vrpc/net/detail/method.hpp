@@ -7,7 +7,7 @@ namespace vrpc::detail {
 class RpcMethodBase {
 public:
     virtual ~RpcMethodBase() = default;
-    virtual auto run(const RpcRequestMessage& message) -> kosio::async::Task<RpcResponseMessage> = 0;
+    virtual auto run(RpcRequestMessage& message) -> kosio::async::Task<RpcResponseMessage> = 0;
 };
 
 template <typename Req, typename Resp>
@@ -19,7 +19,7 @@ public:
 
 public:
     [[REMEMBER_CO_AWAIT]]
-    auto run(const RpcRequestMessage& message) -> kosio::async::Task<RpcResponseMessage> override {
+    auto run(RpcRequestMessage& message) -> kosio::async::Task<RpcResponseMessage> override {
         Req request;
         if (!request.ParseFromString(message.payload_)) {
             co_return RpcResponseMessage::make(message.seq_, Status::kInternal, "parse rpc request message failed", "");
