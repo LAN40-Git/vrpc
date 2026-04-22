@@ -1,4 +1,7 @@
+[TOC]
+
 # vrpc
+
 ![Static Badge](https://img.shields.io/badge/standard-c++23-blue?logo=cplusplus) ![Static Badge](https://img.shields.io/badge/platform-linux-orange?logo=linux)
 
 ## About
@@ -29,6 +32,7 @@ cd vrpc
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
+# 默认安装路径是 /usr/loacl/include/vrpc
 sudo make install
 ```
 
@@ -41,13 +45,11 @@ sudo rm -rf /usr/local/include/vrpc
 
 - [x] 服务端与客户端基本通信
 - [x] 优雅关闭机制
+- [x] 自主设计 RPC 报文
 - [ ] RPC 请求超时
-- [ ] 自定义客户端退避策略
+- [x] 客户端退避策略
 - [x] 消息大小限制
-- [ ] 请求速率限制
-- [ ] 实现 IDL，自动定义枚举和方法
-- [x] 利用固长消息头解决 TCP 粘包
-- [ ] 手动二进制编码（目前依赖于 `protobuf`）
+- [x] 自定义配置
 - [ ] 性能测试
 
 ## Example
@@ -79,168 +81,103 @@ message MathSubResponse {
 
 这里有两个 RPC 服务，分别是加法和减法操作。
 
-2.定义枚举
+2.服务端
 
-由于没有IDL，所以需要手动枚举上述 RPC 服务和调用
-
-`rpc.hpp`
-
-```c++
-#pragma once
-#include "vrpc/core/type.hpp"
-#include "pb/math.pb.h"
-
-enum class ServiceType : vrpc::Type {
-    kMath
-};
-
-enum class InvokeType : vrpc::Type {
-    kMathAdd,
-    kMathSub
-};
-```
-
-3.服务端
+由于没有兼容 protobuf 的反射机制，目前不支持一次性注册所有服务，需要手动指定 protobuf 的请求和回复类型，有些蛋疼，但目前的实现可读性也挺强
 
 `server.cpp`
 
 ```c++
-#include "rpc.hpp"
-#include "vrpc/server.hpp"
-
+// an simple rpc tcp server
+// ctrl + c to close
 #include <kosio/signal/signal.hpp>
+#include "../api/mathpb/math.pb.h"
+#include "vrpc/net/builder.hpp"
 
-vrpc::TcpServer server(8080);
-
-auto handle_math_add_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::RpcResult> {
-    MathAddReqeust request;
-    if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
-        co_return vrpc::make_result(vrpc::StatusCode::kUnknown);
-    }
-
+auto add(const MathAddRequest& request) -> kosio::async::Task<MathAddResponse> {
     auto augend = request.augend();
     auto addend = request.addend();
-    auto result = augend + addend;
-
     MathAddResponse response;
-    response.set_result(result);
-    co_return vrpc::make_result(response, resp_payload);
+    response.set_result(augend + addend);
+    co_return response;
 }
 
-auto handle_math_sub_request(std::string_view req_payload, std::span<char> resp_payload) -> kosio::async::Task<vrpc::RpcResult> {
-    MathSubReqeust request;
-    if (!request.ParseFromArray(req_payload.data(), static_cast<int>(req_payload.size()))) {
-        co_return vrpc::make_result(vrpc::StatusCode::kUnknown);
-    }
-
+auto sub(const MathSubRequest& request) -> kosio::async::Task<MathSubResponse> {
     auto minuend = request.minuend();
     auto subtrahend = request.subtrahend();
-    auto result = minuend - subtrahend;
-
     MathSubResponse response;
-    response.set_result(result);
-    co_return vrpc::make_result(response, resp_payload);
-}
-
-auto shutdown_handler(uint64_t timeout = 0) -> kosio::async::Task<void> {
-    if (timeout == 0) {
-        co_await kosio::signal::ctrl_c();
-    } else {
-        co_await kosio::time::sleep(timeout);
-    }
-    co_await server.shutdown();
-}
-
-auto main_loop() -> kosio::async::Task<void> {
-    server.register_invoke(ServiceType::kMath, InvokeType::kMathAdd, handle_math_add_request);
-    server.register_invoke(ServiceType::kMath, InvokeType::kMathSub, handle_math_sub_request);
-    kosio::spawn(shutdown_handler());
-    co_await server.wait();
+    response.set_result(minuend - subtrahend);
+    co_return response;
 }
 
 auto main() -> int {
-    kosio::runtime::CurrentThreadBuilder::default_create().block_on(main_loop());
+    vrpc::TcpServerBuilder::options()
+        .set_ip("0.0.0.0")
+        .set_port(8080)
+        .set_thread_nums(4)
+        .build()
+        .register_method<MathAddRequest, MathAddResponse>("math", "add", add)
+        .register_method<MathSubRequest, MathSubResponse>("math", "sub", sub)
+        .wait();
 }
 ```
 
-4.客户端
+3.客户端
+
+客户端的 `call_method` 方法几乎不阻塞当前协程，可以放心 `co_await`
 
 `client.cpp`
 
 ```c++
-#include <kosio/signal.hpp>
-#include "rpc.hpp"
-#include "vrpc/client.hpp"
+// an simple rpc tcp client
+// ctrl + c to close
+#include <kosio/signal/signal.hpp>
+#include "../api/mathpb/math.pb.h"
+#include "vrpc/net/builder.hpp"
 
-void error_handler(vrpc::StatusCode code) {
-    if (code != vrpc::StatusCode::kOk) {
-        LOG_ERROR("failed to handle rpc");
-    }
-}
+auto main_coro() -> kosio::async::Task<void> {
+    auto rpc_client = vrpc::TcpClientBuilder::options()
+        .set_ip("127.0.0.1")
+        .set_port(8080)
+        .build();
 
-auto handle_math_add_response(vrpc::StatusCode code, std::string_view resp_payload) -> kosio::async::Task<void> {
-    error_handler(code);
+    // 模拟 RPC 调用
+    MathAddRequest add_request;
+    add_request.set_augend(123);
+    add_request.set_addend(456);
+    co_await rpc_client.call_method<MathAddRequest, MathAddResponse>(
+        "math", "add", add_request,
+        [](const vrpc::Status& status, const MathAddResponse& response) -> kosio::async::Task<void> {
+            if (!status.ok()) {
+                LOG_ERROR("{}", status.message());
+                co_return;
+            }
 
-    MathAddResponse response;
-    if (!response.ParseFromArray(resp_payload.data(), static_cast<int>(resp_payload.size()))) {
-        LOG_ERROR("failed to parse proto message");
-        co_return;
-    }
+            LOG_INFO("get math.add result {}", response.result());
+            co_return;
+        });
 
-    LOG_INFO("get math add result: {}", response.result());
-}
+    MathSubRequest sub_request;
+    sub_request.set_minuend(456);
+    sub_request.set_subtrahend(123);
+    co_await rpc_client.call_method<MathSubRequest, MathSubResponse>(
+        "math", "sub", sub_request,
+        [](const vrpc::Status& status, const MathSubResponse& response) -> kosio::async::Task<void> {
+            if (!status.ok()) {
+                LOG_ERROR("{}", status.message());
+                co_return;
+            }
 
-auto handle_math_sub_response(vrpc::StatusCode code, std::string_view resp_payload) -> kosio::async::Task<void> {
-    error_handler(code);
+            LOG_INFO("get math.sub result {}", response.result());
+            co_return;
+        });
+    co_await kosio::time::sleep(3000);
 
-    MathSubResponse response;
-    if (!response.ParseFromArray(resp_payload.data(), static_cast<int>(resp_payload.size()))) {
-        LOG_ERROR("failed to parse proto message");
-        co_return;
-    }
-
-    LOG_INFO("get math sub result: {}", response.result());
-}
-
-auto send_math_add_request(vrpc::TcpClient& client, int64_t augend, int64_t addend) -> kosio::async::Task<void> {
-    LOG_INFO("i want to know {} + {} = ?", augend, addend);
-    MathAddReqeust request;
-    request.set_augend(augend);
-    request.set_addend(addend);
-    co_await client.call(ServiceType::kMath, InvokeType::kMathAdd, request, handle_math_add_response);
-}
-
-auto send_math_sub_request(vrpc::TcpClient& client, int64_t minuend, int64_t subtrahend) -> kosio::async::Task<void> {
-    LOG_INFO("i want to know {} - {} = ?", minuend, subtrahend);
-    MathSubReqeust request;
-    request.set_minuend(minuend);
-    request.set_subtrahend(subtrahend);
-    co_await client.call(ServiceType::kMath, InvokeType::kMathSub, request, handle_math_sub_response);
-}
-
-auto shutdown_handler(vrpc::TcpClient& client, uint64_t timeout = 0) -> kosio::async::Task<void> {
-    if (timeout == 0) {
-        co_await kosio::signal::ctrl_c();
-    } else {
-        co_await kosio::time::sleep(timeout);
-    }
-    co_await client.shutdown();
-}
-
-auto main_loop() -> kosio::async::Task<void> {
-    auto client = vrpc::TcpClient("localhost", 8080);
-    co_await send_math_add_request(client, 199, 311);
-    co_await send_math_sub_request(client, 36, 21);
-    co_await shutdown_handler(client);
+    // 优雅关闭
+    co_await rpc_client.shutdown();
 }
 
 auto main() -> int {
-    kosio::runtime::CurrentThreadBuilder::default_create().block_on(main_loop());
+    kosio::runtime::MultiThreadBuilder::default_create().block_on(main_coro());
 }
 ```
-
-5.编译运行
-
-客户端得到结果
-
-![image-20260419205713699](/home/lan/CLionProjects/vrpc/.typora/image-20260419205713699.png)

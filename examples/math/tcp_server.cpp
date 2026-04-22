@@ -1,3 +1,5 @@
+// an simple rpc tcp server
+// ctrl + c to close
 #include <kosio/signal/signal.hpp>
 #include "../api/mathpb/math.pb.h"
 #include "vrpc/net/builder.hpp"
