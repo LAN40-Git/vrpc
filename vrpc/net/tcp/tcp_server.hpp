@@ -1,13 +1,13 @@
 #pragma once
 #include <utility>
-
+#include <kosio/signal/signal.hpp>
+#include "vrpc/net/detail/builder.hpp"
 #include "vrpc/net/detail/method.hpp"
 #include "vrpc/net/tcp/detail/server_cache.hpp"
 #include "vrpc/net/tcp/detail/manager.hpp"
 
 namespace vrpc {
 class TcpServer {
-public:
 public:
     explicit TcpServer(detail::Config config)
         : config_(std::move(config)) {
@@ -220,4 +220,6 @@ private:
     detail::Config            config_;
     kosio::net::SocketAddr    addr_{};
 };
+
+class TcpServerBuilder : public detail::EndPointBuilder<TcpServer> {};
 } // namespace vrpc

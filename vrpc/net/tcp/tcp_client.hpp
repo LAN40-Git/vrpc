@@ -1,5 +1,7 @@
 #pragma once
 #include <kosio/net.hpp>
+#include <kosio/signal/signal.hpp>
+
 #include "vrpc/net/detail/callback.hpp"
 #include "vrpc/net/detail/config.hpp"
 #include "vrpc/net/pb/detail/channel.hpp"
@@ -20,11 +22,12 @@ class TcpClient {
     };
 
 public:
-    explicit TcpClient(detail::Config config)
-        : config_(std::move(config))
+    explicit TcpClient(std::string_view ip, uint16_t port)
+        : ip_(ip)
+        , port_(port)
         , stream_(kosio::net::detail::Socket{-1}) {
         callbacks_.rehash(detail::CHANNEL_CAPACITY);
-        auto has_addr = SocketAddr::parse(config_.ip, config_.port);
+        auto has_addr = SocketAddr::parse(ip, port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.error());
         } else {
@@ -48,12 +51,17 @@ public:
 public:
     [[nodiscard]]
     auto ip() const -> std::string_view {
-        return config_.ip;
+        return ip_;
     }
 
     [[nodiscard]]
     auto port() const -> uint16_t {
-        return config_.port;
+        return port_;
+    }
+
+    [[nodiscard]]
+    auto peer_addr() const -> SocketAddr {
+        return peer_addr_;
     }
 
 public:
@@ -253,7 +261,7 @@ private:
             mutex_.unlock();
 
             LOG_INFO("begin to connect to {}", peer_addr_);
-            auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(std::max(backoff, config_.min_connect_timeout));
+            auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(std::max(backoff, detail::MIN_CONNECT_TIMEOUT));
             if (!has_stream) {
                 LOG_ERROR("{}", has_stream.error());
                 backoff = get_block_off(retry_times++);
@@ -288,9 +296,9 @@ private:
     }
 
     [[nodiscard]]
-    auto get_block_off(std::size_t retry_times) const -> std::size_t {
+    static auto get_block_off(std::size_t retry_times) -> std::size_t {
         return std::min(
-            config_.max_backoff,
+            detail::MAX_BACKOFF,
             static_cast<std::size_t>(
                 detail::MULTIPLIER *
                 static_cast<double>(detail::BASE_DELAY) *
@@ -299,8 +307,9 @@ private:
 
 private:
     std::once_flag                once_flag_;
-    detail::Config                config_;
     std::atomic<int>              coro_tasks_{0};
+    std::string                   ip_;
+    uint16_t                      port_;
     SocketAddr                    peer_addr_{};
     State                         state_{Disconnected};
     TcpStream                     stream_;

@@ -2,13 +2,10 @@
 // ctrl + c to close
 #include <kosio/signal/signal.hpp>
 #include "../api/mathpb/math.pb.h"
-#include "vrpc/net/builder.hpp"
+#include "vrpc/net/tcp/tcp_client.hpp"
 
 auto main_coro() -> kosio::async::Task<void> {
-    auto rpc_client = vrpc::TcpClientBuilder::options()
-        .set_ip("127.0.0.1")
-        .set_port(8080)
-        .build();
+    auto rpc_client = vrpc::TcpClient{"127.0.0.1", 8080};
 
     // 模拟 RPC 调用
     MathAddRequest add_request;
@@ -41,8 +38,6 @@ auto main_coro() -> kosio::async::Task<void> {
             co_return;
         });
     co_await kosio::time::sleep(3000);
-
-    // 优雅关闭
     co_await rpc_client.shutdown();
 }
 
