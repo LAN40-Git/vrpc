@@ -22,7 +22,7 @@ auto sub(const MathSubRequest& request) -> kosio::async::Task<MathSubResponse> {
 
 auto main() -> int {
     vrpc::TcpServerBuilder::options()
-        .set_ip("0.0.0.0")
+        .set_host("0.0.0.0")
         .set_port(8080)
         .build()
         .register_method<MathAddRequest, MathAddResponse>("math", "add", add)
