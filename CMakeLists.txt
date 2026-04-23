@@ -35,6 +35,23 @@ install(DIRECTORY vrpc/
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vrpc
 )
 
+# ====== UNINSTALL ======
+if(NOT TARGET uninstall)
+    configure_file(
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/uninstall.cmake
+            ${CMAKE_BINARY_DIR}/uninstall.cmake
+            COPYONLY
+    )
+
+    add_custom_target(uninstall
+            COMMAND ${CMAKE_COMMAND}
+            -DCMAKE_BINARY_DIR=${CMAKE_BINARY_DIR}
+            -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+            -P ${CMAKE_BINARY_DIR}/uninstall.cmake
+            COMMENT "卸载 vrpc 头文件"
+    )
+endif()
+
 # ====== EXAMPLES ======
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/examples)
 # ====== TESTS ======

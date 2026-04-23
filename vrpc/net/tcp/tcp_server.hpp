@@ -179,7 +179,7 @@ private:
             );
 
             if (!ret) {
-                LOG_ERROR("[{}] send rpc response message failed: {}", conn->addr_, ret.error());
+                // LOG_ERROR("[{}] send rpc response message failed: {}", conn->addr_, ret.error());
             }
         }
         manager_.remove(conn->addr_.to_string());

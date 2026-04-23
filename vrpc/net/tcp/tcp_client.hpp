@@ -23,6 +23,7 @@ public:
     explicit TcpClient(detail::Config config)
         : config_(std::move(config))
         , stream_(kosio::net::detail::Socket{-1}) {
+        callbacks_.rehash(detail::CHANNEL_CAPACITY);
         auto has_addr = SocketAddr::parse(config_.ip, config_.port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.error());
@@ -77,8 +78,10 @@ public:
         }
 
         co_await mutex_.lock();
-        std::lock_guard lock{mutex_, std::adopt_lock};
+        co_await channel_mutex_.lock();
         if (state_ == Shutdown) {
+            mutex_.unlock();
+            channel_mutex_.unlock();
             co_return;
         }
 
@@ -87,26 +90,32 @@ public:
             coro_tasks_.fetch_add(1, std::memory_order_relaxed);
             kosio::spawn(connect_loop());
         }
+        mutex_.unlock();
 
         auto seq = message.seq_;
         if (auto ret = co_await sender_->send(message); !ret) {
             LOG_ERROR("{}", ret.error());
+            channel_mutex_.unlock();
             co_return;
         }
+        channel_mutex_.unlock();
         callbacks_.emplace(seq, std::move(rpc_callback));
     }
 
     [[REMEMBER_CO_AWAIT]]
     auto shutdown() -> Task<void> {
         co_await mutex_.lock();
+        co_await channel_mutex_.lock();
         if (state_ == Shutdown) {
             mutex_.unlock();
+            channel_mutex_.unlock();
             co_return;
         }
-
-        sender_->close();
         state_ = Shutdown;
         mutex_.unlock();
+
+        sender_->close();
+        channel_mutex_.unlock();
 
         while (coro_tasks_.load(std::memory_order_relaxed) > 0) {
             co_await kosio::io::cancel(stream_.fd(), IORING_ASYNC_CANCEL_ALL);
@@ -243,6 +252,7 @@ private:
             }
             mutex_.unlock();
 
+            LOG_INFO("begin to connect to {}", peer_addr_);
             auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(std::max(backoff, config_.min_connect_timeout));
             if (!has_stream) {
                 LOG_ERROR("{}", has_stream.error());
@@ -267,6 +277,7 @@ private:
                 break;
             }
             state_ = Ready;
+            LOG_INFO("connect to {}", peer_addr_);
             stream_ = std::move(stream);
             kosio::spawn(send_request_loop());
             kosio::spawn(handle_response_loop());
@@ -294,6 +305,7 @@ private:
     State                         state_{Disconnected};
     TcpStream                     stream_;
     Mutex                         mutex_;
+    Mutex                         channel_mutex_;
     detail::RpcRequestSenderPtr   sender_{nullptr};
     detail::RpcRequestReceiverPtr receiver_{nullptr};
     detail::RpcCallbackMap        callbacks_;

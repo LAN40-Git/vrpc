@@ -309,7 +309,6 @@ public:
     uint32_t    payload_size_{0}; // protobuf 消息大小
     std::string payload_;         // protobuf 消息
     uint32_t    check_sum_{0};    // 校验和
-
     static constexpr uint32_t MIN_MESSAGE_SIZE = sizeof(seq_) + sizeof(status_code_)+ sizeof(err_msg_size_) + sizeof(payload_size_) + sizeof(check_sum_);
 };
 } // namespace vrpc::detail

@@ -4,7 +4,7 @@
 
 namespace vrpc::detail {
 static constexpr std::size_t SHUT_DOWN_WAITING_INTERVAL{30};
-static constexpr std::size_t CHANNEL_CAPACITY = 256;
+static constexpr std::size_t CHANNEL_CAPACITY = 512;
 static constexpr double MULTIPLIER = 1.6;
 static constexpr std::size_t BASE_DELAY = 1000; // 1s
 

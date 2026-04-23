@@ -22,7 +22,7 @@ public:
     auto run(RpcRequestMessage& message) -> kosio::async::Task<RpcResponseMessage> override {
         Req request;
         if (!request.ParseFromString(message.payload_)) {
-            co_return RpcResponseMessage::make(message.seq_, Status::kInternal, "parse rpc request message failed", "");
+            co_return RpcResponseMessage::make(message.seq_, Status::kInternal, "parse rpc request message failed");
         }
         auto response = co_await method_(request);
         co_return RpcResponseMessage::make(message.seq_, Status::kOk, "", response.SerializeAsString());

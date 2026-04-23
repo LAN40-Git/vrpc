@@ -1,6 +1,7 @@
 #pragma once
+#include <cstdint>
+#include <string>
 #include <string_view>
-#include <utility>
 
 namespace vrpc {
 class Status {
