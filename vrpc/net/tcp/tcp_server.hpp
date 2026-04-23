@@ -64,7 +64,7 @@ public:
             co_await manager_.cancel_all();
             co_await kosio::time::sleep(detail::SHUT_DOWN_WAITING_INTERVAL);
         }
-        LOG_INFO("vrpc server on {} stop", addr_);
+        LOG_INFO("vrpc server on {} closed", addr_);
     }
 
 private:
@@ -182,6 +182,7 @@ private:
                 // LOG_ERROR("[{}] send rpc response message failed: {}", conn->addr_, ret.error());
             }
         }
+        co_await stream.close();
         manager_.remove(conn->addr_.to_string());
     }
 

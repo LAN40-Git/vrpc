@@ -190,6 +190,7 @@ private:
                 break;
             case Disconnecting:
                 state_ = Disconnected;
+                co_await stream_.close();
                 break;
             default:
                 break;
@@ -239,6 +240,7 @@ private:
                 break;
             case Disconnecting:
                 state_ = Disconnected;
+                co_await stream_.close();
                 break;
             default:
                 break;
@@ -260,7 +262,6 @@ private:
             }
             mutex_.unlock();
 
-            LOG_INFO("begin to connect to {}", peer_addr_);
             auto has_stream = co_await TcpStream::connect(peer_addr_).set_timeout(std::max(backoff, detail::MIN_CONNECT_TIMEOUT));
             if (!has_stream) {
                 LOG_ERROR("{}", has_stream.error());
