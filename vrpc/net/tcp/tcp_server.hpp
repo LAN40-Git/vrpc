@@ -11,7 +11,7 @@ class TcpServer {
 public:
     explicit TcpServer(detail::Config config)
         : config_(std::move(config)) {
-        auto has_addr = kosio::net::SocketAddr::parse(config_.ip, config_.port);
+        auto has_addr = kosio::net::SocketAddr::parse(config_.host, config_.port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.value());
         } else {

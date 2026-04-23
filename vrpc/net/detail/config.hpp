@@ -11,8 +11,8 @@ static constexpr std::size_t MIN_CONNECT_TIMEOUT = 20 * 1000; // 20s
 static constexpr std::size_t MAX_BACKOFF = 120 * 1000; // 120s
 
 struct Config {
-    // 服务端的监听 IP
-    std::string ip{"127.0.0.1"};
+    // 服务端的监听主机
+    std::string host{"127.0.0.1"};
 
     // 服务端的监听端口
     uint16_t port{8080};

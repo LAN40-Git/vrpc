@@ -22,12 +22,12 @@ class TcpClient {
     };
 
 public:
-    explicit TcpClient(std::string_view ip, uint16_t port)
-        : ip_(ip)
+    explicit TcpClient(std::string_view host, uint16_t port)
+        : host_(host)
         , port_(port)
         , stream_(kosio::net::detail::Socket{-1}) {
         callbacks_.rehash(detail::CHANNEL_CAPACITY);
-        auto has_addr = SocketAddr::parse(ip, port);
+        auto has_addr = SocketAddr::parse(host_, port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.error());
         } else {
@@ -50,8 +50,8 @@ public:
 
 public:
     [[nodiscard]]
-    auto ip() const -> std::string_view {
-        return ip_;
+    auto host() const -> std::string_view {
+        return host_;
     }
 
     [[nodiscard]]
@@ -309,7 +309,7 @@ private:
 private:
     std::once_flag                once_flag_;
     std::atomic<int>              coro_tasks_{0};
-    std::string                   ip_;
+    std::string                   host_;
     uint16_t                      port_;
     SocketAddr                    peer_addr_{};
     State                         state_{Disconnected};

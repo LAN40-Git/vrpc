@@ -9,8 +9,8 @@ private:
 
 public:
     [[nodiscard]]
-    auto set_ip(std::string_view ip) -> EndPointBuilder& {
-        config_.ip = ip;
+    auto set_host(std::string_view host) -> EndPointBuilder& {
+        config_.host = host;
         return *this;
     }
 
