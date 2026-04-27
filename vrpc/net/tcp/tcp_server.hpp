@@ -9,9 +9,8 @@
 namespace vrpc {
 class TcpServer {
 public:
-    explicit TcpServer(detail::Config config)
-        : config_(std::move(config)) {
-        auto has_addr = kosio::net::SocketAddr::parse(config_.host, config_.port);
+    explicit TcpServer(std::string_view host = "0.0.0.0", uint16_t port = 8080) {
+        auto has_addr = kosio::net::SocketAddr::parse(host, port);
         if (!has_addr) {
             LOG_ERROR("{}", has_addr.value());
         } else {
@@ -28,11 +27,6 @@ public:
     auto operator=(TcpServer&&) -> TcpServer& = delete;
 
 public:
-    auto port() const -> uint16_t {
-        return config_.port;
-    }
-
-public:
     template <typename Req, typename Resp>
         requires std::is_base_of_v<google::protobuf::Message, Req> &&
                  std::is_base_of_v<google::protobuf::Message, Resp>
@@ -45,11 +39,8 @@ public:
     }
 
 public:
-    void wait() {
-        kosio::runtime::MultiThreadBuilder::options()
-            .set_num_workers(config_.thread_nums)
-            .build()
-            .block_on(accept_loop());
+    auto wait() -> kosio::async::Task<void> {
+        co_await accept_loop();
     }
 
     [[REMEMBER_CO_AWAIT]]
@@ -68,6 +59,7 @@ public:
     }
 
 private:
+    [[REMEMBER_CO_AWAIT]]
     auto accept_loop() -> kosio::async::Task<void> {
         auto has_listener = kosio::net::TcpListener::bind(addr_);
         if (!has_listener) {
@@ -218,9 +210,6 @@ private:
     std::atomic<bool>         is_shutdown_{false};
     detail::RpcServiceMap     services_;
     detail::ConnectionManager manager_;
-    detail::Config            config_;
     kosio::net::SocketAddr    addr_{};
 };
-
-class TcpServerBuilder : public detail::EndPointBuilder<TcpServer> {};
 } // namespace vrpc

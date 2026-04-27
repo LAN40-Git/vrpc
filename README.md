@@ -130,14 +130,16 @@ auto sub(const MathSubRequest& request) -> kosio::async::Task<MathSubResponse> {
     co_return response;
 }
 
+auto main_coro() -> kosio::async::Task<void> {
+    auto rpc_server = vrpc::TcpServer{"0.0.0.0", 8080};
+    co_await rpc_server
+    .register_method<MathAddRequest, MathAddResponse>("math", "add", add)
+    .register_method<MathSubRequest, MathSubResponse>("math", "sub", sub)
+    .wait();
+}
+
 auto main() -> int {
-    vrpc::TcpServerBuilder::options()
-        .set_ip("0.0.0.0")
-        .set_port(8080)
-        .build()
-        .register_method<MathAddRequest, MathAddResponse>("math", "add", add)
-        .register_method<MathSubRequest, MathSubResponse>("math", "sub", sub)
-        .wait();
+    kosio::runtime::MultiThreadBuilder::default_create().block_on(main_coro());
 }
 ```
 
