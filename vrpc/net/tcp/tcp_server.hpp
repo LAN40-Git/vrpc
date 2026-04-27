@@ -68,7 +68,7 @@ private:
         }
         auto listener = std::move(has_listener.value());
         is_accepting_.store(true, std::memory_order_release);
-        kosio::spawn(wait_for_ctrl_c());
+        // kosio::spawn(wait_for_ctrl_c());
         LOG_INFO("vrpc tcp server listening on {}", addr_);
         while (true) {
             auto has_stream = co_await listener.accept();

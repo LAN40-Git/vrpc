@@ -74,9 +74,9 @@ public:
         std::string_view method_name,
         const Req& request,
         const std::function<Task<void>(const Status& status, const Resp& response)>& callback) -> Task<void> {
-        std::call_once(once_flag_, [this](){
-            kosio::spawn(register_shutdown_signal());
-        });
+        // std::call_once(once_flag_, [this](){
+        //     kosio::spawn(register_shutdown_signal());
+        // });
 
         auto message = detail::RpcRequestMessage::make(service_name, method_name, request.SerializeAsString());
         auto rpc_callback = std::make_unique<detail::RpcCallbackImpl<Resp>>(callback);
