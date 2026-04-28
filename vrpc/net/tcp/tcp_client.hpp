@@ -178,10 +178,10 @@ private:
             );
 
             if (!ret) {
-                LOG_ERROR("{}", ret.error());
                 kosio::spawn(trigger_callback(detail::RpcResponseMessage::make(
                     be64toh(request.seq_),
                     Status::kUnavailable, "send rpc request message failed")));
+                break;
             }
         }
         co_await mutex_.lock();
