@@ -13,7 +13,7 @@ public:
 template <typename Req, typename Resp>
 class RpcMethodImpl final : public RpcMethodBase {
 public:
-    using Method = std::function<kosio::async::Task<Resp>(const Req&)>;
+    using Method = std::function<kosio::async::Task<Resp>(Req&)>;
     explicit RpcMethodImpl(Method method)
         : method_(std::move(method)) {}
 

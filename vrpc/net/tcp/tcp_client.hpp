@@ -73,7 +73,7 @@ public:
         std::string_view service_name,
         std::string_view method_name,
         const Req& request,
-        const std::function<Task<void>(const Status& status, const Resp& response)>& callback) -> Task<void> {
+        const std::function<Task<void>(const Status& status, Resp& response)>& callback) -> Task<void> {
         // std::call_once(once_flag_, [this](){
         //     kosio::spawn(register_shutdown_signal());
         // });

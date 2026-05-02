@@ -33,7 +33,7 @@ public:
     auto register_method(
         const std::string& service_name,
         const std::string& method_name,
-        const std::function<kosio::async::Task<Resp>(const Req& request)>& method) -> TcpServer& {
+        const std::function<kosio::async::Task<Resp>(Req& request)>& method) -> TcpServer& {
         services_[service_name][method_name] = std::make_unique<detail::RpcMethodImpl<Req, Resp>>(method);
         return *this;
     }

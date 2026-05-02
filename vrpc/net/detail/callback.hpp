@@ -14,7 +14,7 @@ public:
 template <typename Resp>
 class RpcCallbackImpl final : public RpcCallbackBase {
 public:
-    using Callback = std::function<kosio::async::Task<void>(const Status&, const Resp&)>;
+    using Callback = std::function<kosio::async::Task<void>(const Status&, Resp&)>;
     explicit RpcCallbackImpl(Callback callback)
         : callback_(std::move(callback)) {}
 

@@ -38,7 +38,7 @@ public:
     [[REMEMBER_CO_AWAIT]]
     auto assign(const kosio::net::SocketAddr& addr, kosio::net::TcpStream stream) -> kosio::async::Task<std::shared_ptr<Connection>> {
         auto [sender, receiver] =
-            RpcRequestChannel::make(detail::CHANNEL_CAPACITY);
+            RpcRequestChannel::make(CHANNEL_CAPACITY);
         auto new_conn = std::make_shared<Connection>(addr, std::move(stream), std::move(sender), std::move(receiver));
         auto addr_str = addr.to_string();
         {
@@ -55,6 +55,7 @@ public:
         connections_.erase(addr);
     }
 
+    [[nodiscard]]
     auto empty() const -> bool {
         return connections_.empty();
     }
