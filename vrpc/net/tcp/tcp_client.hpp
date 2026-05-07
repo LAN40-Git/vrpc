@@ -188,6 +188,9 @@ private:
         switch (state_) {
             case Shutdown:
                 break;
+            case Ready:
+                state_ = Disconnecting;
+                break;
             case Disconnecting:
                 state_ = Disconnected;
                 co_await stream_.close();
@@ -237,6 +240,9 @@ private:
         co_await mutex_.lock();
         switch (state_) {
             case Shutdown:
+                break;
+            case Ready:
+                state_ = Disconnecting;
                 break;
             case Disconnecting:
                 state_ = Disconnected;
