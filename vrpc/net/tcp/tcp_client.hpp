@@ -190,10 +190,10 @@ private:
                 break;
             case Ready:
                 state_ = Disconnecting;
+                co_await stream_.close();
                 break;
             case Disconnecting:
                 state_ = Disconnected;
-                co_await stream_.close();
                 break;
             default:
                 break;
@@ -243,10 +243,10 @@ private:
                 break;
             case Ready:
                 state_ = Disconnecting;
+                co_await stream_.close();
                 break;
             case Disconnecting:
                 state_ = Disconnected;
-                co_await stream_.close();
                 break;
             default:
                 break;
